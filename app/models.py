@@ -40,18 +40,21 @@ class VerifyRegistrationOtpIn(BaseModel):
 
 
 class ForgotPasswordOtpIn(BaseModel):
-    email: EmailStr
-    mobile_number: str
+    identifier: Optional[str] = None
+    email: Optional[EmailStr] = None
+    mobile_number: Optional[str] = None
 
 
 class VerifyForgotPasswordOtpIn(BaseModel):
-    email: EmailStr
-    mobile_number: str
+    identifier: Optional[str] = None
+    email: Optional[EmailStr] = None
+    mobile_number: Optional[str] = None
     otp: str
 
 
 class ResetPasswordIn(BaseModel):
-    email: EmailStr
+    identifier: Optional[str] = None
+    email: Optional[EmailStr] = None
     reset_token: str
     new_password: str
 

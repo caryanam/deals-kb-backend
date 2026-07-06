@@ -8,6 +8,7 @@ from app.config import (
     SMTP_HOST,
     SMTP_PASSWORD,
     SMTP_PORT,
+    SMTP_TIMEOUT_SECONDS,
     SMTP_USERNAME,
     SMTP_USE_SSL,
 )
@@ -25,12 +26,12 @@ def send_email(to_email: str, subject: str, text_body: str) -> None:
 
     if SMTP_USE_SSL:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as smtp:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
             smtp.send_message(message)
         return
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
         smtp.starttls(context=ssl.create_default_context())
         smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
         smtp.send_message(message)

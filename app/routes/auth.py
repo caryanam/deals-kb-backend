@@ -2,6 +2,7 @@ import uuid
 import random
 import re
 import logging
+import threading
 from datetime import timedelta
 
 import httpx
@@ -39,6 +40,23 @@ logger = logging.getLogger("dealskb")
 REGISTRATION_ROLES = ("Buyer", "Seller", "Dealer")
 
 
+def new_password_matches_current(new_password: str, current_hash: str | None) -> bool:
+    if not current_hash:
+        return False
+
+    candidates = {new_password, new_password.strip()}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            if pwd_context.verify(candidate, current_hash):
+                return True
+        except Exception:
+            logger.exception("Unable to verify current password while resetting password")
+            raise HTTPException(status_code=500, detail="Unable to verify current password. Please try again.")
+    return False
+
+
 def normalize_mobile(mobile_number: str | None) -> str | None:
     return mobile_number.strip() if mobile_number else None
 
@@ -48,8 +66,40 @@ def validate_indian_mobile(mobile_number: str | None):
         raise HTTPException(status_code=400, detail="mobile_number must be a valid 10-digit Indian mobile number")
 
 
+def resolve_user_by_identifier(
+    db: Session,
+    identifier: str | None = None,
+    email: str | None = None,
+    mobile_number: str | None = None,
+) -> User:
+    raw_identifier = (identifier or email or mobile_number or "").strip()
+    if not raw_identifier:
+        raise HTTPException(status_code=400, detail="Enter mobile or email")
+
+    if "@" in raw_identifier:
+        user = db.query(User).filter(User.email == raw_identifier.lower()).first()
+    else:
+        mobile = normalize_mobile(raw_identifier)
+        validate_indian_mobile(mobile)
+        user = db.query(User).filter(User.mobile_number == mobile).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Account does not exist.")
+    if user.auth_provider != "email":
+        raise HTTPException(status_code=400, detail="Password reset is available only for password accounts.")
+    return user
+
+
 def generate_otp() -> str:
     return f"{random.randint(100000, 999999)}"
+
+
+def send_forgot_password_otp_email_background(email: str, otp: str):
+    try:
+        send_otp_email(email, otp, "forgot_password")
+        logger.info("Forgot password OTP email sent to %s", email)
+    except Exception:
+        logger.exception("Failed to send forgot password OTP email to %s", email)
 
 
 def create_user(db: Session, email: str | None, password_hash: str, name: str, role: str, mobile_number: str | None):
@@ -267,28 +317,22 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 
 @router.post("/forgot-password/send-otp")
-def forgot_password_send_otp(body: ForgotPasswordOtpIn, db: Session = Depends(get_db)):
-    mobile_number = normalize_mobile(body.mobile_number)
-    user = db.query(User).filter(User.email == body.email.lower()).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Email not found")
-    if user.mobile_number != mobile_number:
-        raise HTTPException(status_code=400, detail="Mobile number does not match this email")
+def forgot_password_send_otp(
+    body: ForgotPasswordOtpIn,
+    db: Session = Depends(get_db),
+):
+    user = resolve_user_by_identifier(db, body.identifier, body.email, body.mobile_number)
+    mobile_number = normalize_mobile(user.mobile_number)
 
     db.query(MobileVerificationOTP).filter(
         MobileVerificationOTP.user_id == user.user_id,
         MobileVerificationOTP.purpose == "forgot_password",
+        MobileVerificationOTP.expires_at < now_utc().replace(tzinfo=None),
     ).delete()
     otp = generate_otp()
     if APP_ENV != "production":
         print(f"\n=== FORGOT PASSWORD OTP for {mobile_number} / {user.email}: {otp} ===\n", flush=True)
         logger.warning("Forgot password OTP for %s / %s is %s", mobile_number, user.email, otp)
-    try:
-        send_otp_email(user.email, otp, "forgot_password")
-        logger.info("Forgot password OTP email sent to %s", user.email)
-    except Exception as exc:
-        logger.exception("Failed to send forgot password OTP email to %s", user.email)
-        raise HTTPException(status_code=502, detail=f"Failed to send OTP email: {exc}") from exc
     reset = MobileVerificationOTP(
         verification_id=f"motp_{uuid.uuid4().hex[:12]}",
         purpose="forgot_password",
@@ -300,6 +344,11 @@ def forgot_password_send_otp(body: ForgotPasswordOtpIn, db: Session = Depends(ge
     )
     db.add(reset)
     db.commit()
+    threading.Thread(
+        target=send_forgot_password_otp_email_background,
+        args=(user.email, otp),
+        daemon=True,
+    ).start()
 
     response = {"message": "OTP sent successfully to email"}
     if APP_ENV != "production":
@@ -309,19 +358,15 @@ def forgot_password_send_otp(body: ForgotPasswordOtpIn, db: Session = Depends(ge
 
 @router.post("/forgot-password/verify-otp")
 def forgot_password_verify_otp(body: VerifyForgotPasswordOtpIn, db: Session = Depends(get_db)):
-    mobile_number = normalize_mobile(body.mobile_number)
+    user = resolve_user_by_identifier(db, body.identifier, body.email, body.mobile_number)
+    now = now_utc().replace(tzinfo=None)
     reset = db.query(MobileVerificationOTP).filter(
-        MobileVerificationOTP.email == body.email.lower(),
-        MobileVerificationOTP.mobile_number == mobile_number,
+        MobileVerificationOTP.user_id == user.user_id,
         MobileVerificationOTP.purpose == "forgot_password",
+        MobileVerificationOTP.otp == body.otp.strip(),
+        MobileVerificationOTP.expires_at >= now,
     ).order_by(MobileVerificationOTP.created_at.desc()).first()
     if not reset:
-        raise HTTPException(status_code=400, detail="OTP not found")
-    if reset.expires_at < now_utc().replace(tzinfo=None):
-        db.delete(reset)
-        db.commit()
-        raise HTTPException(status_code=400, detail="OTP expired")
-    if reset.otp != body.otp:
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     reset.is_verified = True
@@ -333,8 +378,9 @@ def forgot_password_verify_otp(body: VerifyForgotPasswordOtpIn, db: Session = De
 
 @router.post("/forgot-password/reset")
 def forgot_password_reset(body: ResetPasswordIn, db: Session = Depends(get_db)):
+    user = resolve_user_by_identifier(db, body.identifier, body.email)
     reset = db.query(MobileVerificationOTP).filter(
-        MobileVerificationOTP.email == body.email.lower(),
+        MobileVerificationOTP.user_id == user.user_id,
         MobileVerificationOTP.reset_token == body.reset_token,
         MobileVerificationOTP.is_verified.is_(True),
         MobileVerificationOTP.purpose == "forgot_password",
@@ -346,11 +392,19 @@ def forgot_password_reset(body: ResetPasswordIn, db: Session = Depends(get_db)):
         db.commit()
         raise HTTPException(status_code=400, detail="Reset token expired")
 
-    user = db.query(User).filter(User.user_id == reset.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    user.password_hash = pwd_context.hash(body.new_password)
-    db.delete(reset)
+    new_password = (body.new_password or "").strip()
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+
+    if new_password_matches_current(new_password, user.password_hash):
+        logger.info("Rejected password reset because new password matches current password for user_id=%s", user.user_id)
+        raise HTTPException(status_code=400, detail="New password cannot be the same as your current password")
+
+    user.password_hash = pwd_context.hash(new_password)
+    db.query(MobileVerificationOTP).filter(
+        MobileVerificationOTP.user_id == user.user_id,
+        MobileVerificationOTP.purpose == "forgot_password",
+    ).delete(synchronize_session=False)
     db.commit()
     return {"message": "Password reset successfully"}
 
