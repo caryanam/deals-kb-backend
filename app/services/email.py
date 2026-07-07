@@ -46,3 +46,20 @@ def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
         "Regards,\nDealsKB Support"
     )
     send_email(to_email, subject, body)
+
+
+def send_newsletter_subscription_email(to_email: str) -> None:
+    subject = "Welcome to DealsKB Auction Alerts"
+    body = (
+        "Hello,\n\n"
+        "Thank you for subscribing to DealsKB weekly auction alerts.\n\n"
+        "Sample alert format:\n"
+        "- New live auctions near you\n"
+        "- Cars, Bikes, Mobiles and Laptops going live this week\n"
+        "- Secure bidding pass reminders\n"
+        "- Featured verified listings\n\n"
+        "We will notify you when new auction deals are available.\n\n"
+        "Regards,\n"
+        "DealsKB Support"
+    )
+    send_email(to_email, subject, body)

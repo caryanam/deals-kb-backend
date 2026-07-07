@@ -59,6 +59,10 @@ class ResetPasswordIn(BaseModel):
     new_password: str
 
 
+class NewsletterSubscribeIn(BaseModel):
+    email: EmailStr
+
+
 class UserProfileUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None

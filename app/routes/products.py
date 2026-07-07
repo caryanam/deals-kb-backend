@@ -108,6 +108,25 @@ def list_products(
     return [serialize_product(item) for item in items]
 
 
+@router.get("/public")
+def list_public_products(
+    status_filter: Optional[str] = None,
+    product_type: Optional[str] = None,
+    seller_id: Optional[str] = None,
+    winner_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    return list_products(
+        status_filter=status_filter,
+        product_type=product_type,
+        seller_id=seller_id,
+        winner_id=winner_id,
+        mine=False,
+        authorization=None,
+        db=db,
+    )
+
+
 @router.get("/{product_id}")
 def get_product(product_id: str, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.product_id == product_id).first()

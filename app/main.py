@@ -11,7 +11,7 @@ from app.auth import pwd_context
 from app.config import ADMIN_EMAIL, ADMIN_MOBILE_NUMBER, ADMIN_PASSWORD, CORS_ORIGINS, MAX_REQUEST_SIZE_BYTES, MAX_REQUEST_SIZE_MB, OLD_ADMIN_EMAIL
 from app.database import Base, SessionLocal, engine, ensure_database_exists
 from app.models_sql import User
-from app.routes import admin, auth, chat_requests, chats, community_requests, notifications, payments, plans, products, reports, users, ws
+from app.routes import admin, auth, chat_requests, chats, community_requests, newsletter, notifications, payments, plans, products, reports, users, ws
 from app.services.users import sync_role_profile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -43,6 +43,7 @@ api.include_router(reports.router)
 api.include_router(payments.router)
 api.include_router(plans.router)
 api.include_router(users.router)
+api.include_router(newsletter.router)
 api.include_router(notifications.router)
 api.include_router(community_requests.router)
 api.include_router(chat_requests.router)
