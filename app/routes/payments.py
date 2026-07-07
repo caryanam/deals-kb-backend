@@ -35,15 +35,20 @@ def _require_razorpay_config():
 def _log_razorpay_config():
     key_id, key_secret, _ = _razorpay_credentials()
     print("RAZORPAY_KEY_ID:", key_id, flush=True)
+    print("RAZORPAY_MODE:", "test" if key_id.startswith("rzp_test_") else "live" if key_id.startswith("rzp_live_") else "unknown", flush=True)
     print("RAZORPAY_KEY_SECRET loaded:", bool(key_secret), flush=True)
     print("RAZORPAY_KEY_SECRET length:", len(key_secret or ""), flush=True)
 
 
-def _verify_signature(order_id: str, payment_id: str, signature: str) -> bool:
+def _generate_signature(order_id: str, payment_id: str) -> str:
     _, key_secret, _ = _razorpay_credentials()
     payload = f"{order_id}|{payment_id}".encode("utf-8")
-    expected = hmac.new(key_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    return hmac.new(key_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def _verify_signature(order_id: str, payment_id: str, signature: str) -> tuple[bool, str]:
+    expected = _generate_signature(order_id, payment_id)
+    return hmac.compare_digest(expected, signature), expected
 
 
 @router.get("/config")
@@ -90,12 +95,14 @@ async def create_payment_order(
         "amount": plan["amount"],
         "currency": plan.get("currency") or currency,
         "receipt": receipt,
+        "payment_capture": 1,
         "notes": {
             "user_id": user.user_id,
             "role": user.role,
             "plan_id": plan["plan_id"],
         },
     }
+    print("Razorpay order create payload:", payload, flush=True)
 
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
@@ -104,9 +111,9 @@ async def create_payment_order(
             auth=(key_id, key_secret),
         )
 
+    print("Razorpay order create status:", response.status_code, flush=True)
+    print("Razorpay order create response:", response.text, flush=True)
     if response.status_code >= 400:
-        print("Razorpay status:", response.status_code, flush=True)
-        print("Razorpay response:", response.text, flush=True)
         raise HTTPException(
             status_code=400,
             detail=f"Razorpay order creation failed: {response.text}",
@@ -129,12 +136,18 @@ async def create_payment_order(
     db.add(payment)
     db.commit()
     db.refresh(payment)
+    print(
+        "DB payment created:",
+        {"payment_id": payment.payment_id, "razorpay_order_id": payment.razorpay_order_id, "status": payment.status},
+        flush=True,
+    )
 
     return {
         "key_id": key_id,
         "order_id": order["id"],
         "amount": order["amount"],
         "currency": order["currency"],
+        "receipt": receipt,
         "order": order,
         "payment": serialize_payment(payment),
         "prefill": {
@@ -161,6 +174,15 @@ def verify_payment(
     db: Session = Depends(get_db),
 ):
     _require_razorpay_config()
+    print(
+        "Razorpay verify request:",
+        {
+            "razorpay_order_id": body.razorpay_order_id,
+            "razorpay_payment_id": body.razorpay_payment_id,
+            "razorpay_signature": body.razorpay_signature,
+        },
+        flush=True,
+    )
     payment = db.query(PaymentTransaction).filter(
         PaymentTransaction.razorpay_order_id == body.razorpay_order_id,
         PaymentTransaction.user_id == user.user_id,
@@ -170,11 +192,24 @@ def verify_payment(
     if payment.status == "paid":
         return {"message": "Payment already verified", "payment": serialize_payment(payment)}
 
-    if not _verify_signature(body.razorpay_order_id, body.razorpay_payment_id, body.razorpay_signature):
+    signature_match, generated_signature = _verify_signature(
+        body.razorpay_order_id,
+        body.razorpay_payment_id,
+        body.razorpay_signature,
+    )
+    print("Generated signature:", generated_signature, flush=True)
+    print("Received signature:", body.razorpay_signature, flush=True)
+    print("Signature match:", signature_match, flush=True)
+    if not signature_match:
         payment.status = "failed"
         payment.updated_at = now_utc().replace(tzinfo=None)
         db.commit()
-        raise HTTPException(status_code=400, detail="Invalid payment signature")
+        print(
+            "DB payment update result:",
+            {"payment_id": payment.payment_id, "status": payment.status},
+            flush=True,
+        )
+        raise HTTPException(status_code=400, detail="Payment signature verification failed")
 
     payment.razorpay_payment_id = body.razorpay_payment_id
     payment.razorpay_signature = body.razorpay_signature
@@ -183,6 +218,11 @@ def verify_payment(
     payment.updated_at = now_utc().replace(tzinfo=None)
     db.commit()
     db.refresh(payment)
+    print(
+        "DB payment update result:",
+        {"payment_id": payment.payment_id, "status": payment.status, "paid_at": str(payment.paid_at)},
+        flush=True,
+    )
     return {"message": "Payment verified successfully", "payment": serialize_payment(payment)}
 
 

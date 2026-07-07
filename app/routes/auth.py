@@ -7,6 +7,7 @@ from datetime import timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.auth import auth_required, create_jwt, pwd_context
@@ -22,7 +23,7 @@ from app.models import (
     VerifyForgotPasswordOtpIn,
     VerifyRegistrationOtpIn,
 )
-from app.models_sql import MobileVerificationOTP, User, UserSession
+from app.models_sql import MobileVerificationOTP, RegistrationOTP, User, UserSession
 from app.serializers import serialize_user
 from app.services.email import send_otp_email
 from app.services.notifications import notify_admins
@@ -142,7 +143,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    return {"access_token": create_jwt(user.user_id, user.role), "user": serialize_user(user)}
+    return {"access_token": create_jwt(user.user_id, user.role, user.email), "token_type": "bearer", "user": serialize_user(user)}
 
 
 @router.post("/send-registration-otp")
@@ -155,6 +156,16 @@ def send_registration_otp(body: RegistrationOtpIn, db: Session = Depends(get_db)
     if email and db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    now = now_utc().replace(tzinfo=None)
+    latest_otp = db.query(RegistrationOTP).filter(
+        RegistrationOTP.email == email,
+    ).order_by(RegistrationOTP.created_at.desc()).first()
+    if latest_otp and latest_otp.created_at:
+        elapsed_seconds = (now - latest_otp.created_at).total_seconds()
+        if 0 <= elapsed_seconds < 30:
+            wait_seconds = max(1, int(30 - elapsed_seconds))
+            raise HTTPException(status_code=429, detail=f"Please wait {wait_seconds} seconds before resending OTP")
+
     otp = generate_otp()
     if APP_ENV != "production":
         print(f"\n=== REGISTRATION OTP for {email}: {otp} ===\n", flush=True)
@@ -165,20 +176,20 @@ def send_registration_otp(body: RegistrationOtpIn, db: Session = Depends(get_db)
     except Exception as exc:
         logger.exception("Failed to send registration OTP email to %s", email)
         raise HTTPException(status_code=502, detail=f"Failed to send OTP email: {exc}") from exc
-    db.query(MobileVerificationOTP).filter(
-        MobileVerificationOTP.email == email,
-        MobileVerificationOTP.purpose == "registration",
+    db.query(RegistrationOTP).filter(
+        RegistrationOTP.email == email,
     ).delete()
-    db.add(MobileVerificationOTP(
-        verification_id=f"motp_{uuid.uuid4().hex[:12]}",
-        purpose="registration",
+    delete_registration_otp(email=email)
+    db.add(RegistrationOTP(
+        otp_id=f"rotp_{uuid.uuid4().hex[:12]}",
         email=email,
-        mobile_number="",
+        mobile_number=None,
         name=body.name,
         role=body.role,
-        password_hash=None,
+        password_hash="",
         otp=otp,
-        expires_at=now_utc().replace(tzinfo=None) + timedelta(minutes=5),
+        created_at=now,
+        expires_at=now + timedelta(minutes=5),
     ))
     set_registration_otp(RegistrationOtpCacheEntry(
         email=email,
@@ -187,7 +198,7 @@ def send_registration_otp(body: RegistrationOtpIn, db: Session = Depends(get_db)
         role=body.role,
         password_hash=None,
         otp=otp,
-        expires_at=now_utc().replace(tzinfo=None) + timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=5),
     ))
     db.commit()
 
@@ -209,11 +220,10 @@ def check_registration_otp(body: VerifyRegistrationOtpIn, db: Session = Depends(
         now=now,
     )
     if not otp_record:
-        db_otp = db.query(MobileVerificationOTP).filter(
-            MobileVerificationOTP.email == email,
-            MobileVerificationOTP.purpose == "registration",
-            MobileVerificationOTP.otp == body.otp.strip(),
-        ).order_by(MobileVerificationOTP.created_at.desc()).first()
+        db_otp = db.query(RegistrationOTP).filter(
+            RegistrationOTP.email == email,
+            RegistrationOTP.otp == body.otp.strip(),
+        ).order_by(RegistrationOTP.created_at.desc()).first()
         if db_otp and db_otp.expires_at >= now:
             otp_record = RegistrationOtpCacheEntry(
                 email=db_otp.email,
@@ -252,14 +262,13 @@ def verify_registration_otp(body: VerifyRegistrationOtpIn, db: Session = Depends
         now=now,
     )
     if not otp_record:
-        query = db.query(MobileVerificationOTP).filter(
-            MobileVerificationOTP.email == email,
-            MobileVerificationOTP.purpose == "registration",
-            MobileVerificationOTP.otp == body.otp.strip(),
+        query = db.query(RegistrationOTP).filter(
+            RegistrationOTP.email == email,
+            RegistrationOTP.otp == body.otp.strip(),
         )
         if mobile_number:
-            query = query.filter(MobileVerificationOTP.mobile_number == mobile_number)
-        db_otp = query.order_by(MobileVerificationOTP.created_at.desc()).first()
+            query = query.filter(or_(RegistrationOTP.mobile_number == mobile_number, RegistrationOTP.mobile_number.is_(None)))
+        db_otp = query.order_by(RegistrationOTP.created_at.desc()).first()
         if db_otp and db_otp.expires_at >= now:
             otp_record = RegistrationOtpCacheEntry(
                 email=db_otp.email,
@@ -286,18 +295,18 @@ def verify_registration_otp(body: VerifyRegistrationOtpIn, db: Session = Depends
         mobile_number=mobile_number,
     )
     delete_registration_otp(mobile_number, email=email)
-    db.query(MobileVerificationOTP).filter(
-        MobileVerificationOTP.email == email,
-        MobileVerificationOTP.purpose == "registration",
+    db.query(RegistrationOTP).filter(
+        RegistrationOTP.email == email,
     ).delete()
     db.commit()
     db.refresh(user)
-    return {"access_token": create_jwt(user.user_id, user.role), "user": serialize_user(user)}
+    return {"access_token": create_jwt(user.user_id, user.role, user.email), "token_type": "bearer", "user": serialize_user(user)}
 
 
 @router.post("/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
     user = None
+    password = (body.password or "").strip()
     if body.mobile_number:
         mobile_number = normalize_mobile(body.mobile_number)
         validate_indian_mobile(mobile_number)
@@ -308,12 +317,12 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email or mobile_number is required")
     if not user or user.auth_provider != "email":
         raise HTTPException(status_code=400, detail="Invalid email/mobile number or password")
-    if not pwd_context.verify(body.password, user.password_hash or ""):
+    if not password or not pwd_context.verify(password, user.password_hash or ""):
         raise HTTPException(status_code=400, detail="Invalid email/mobile number or password")
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Your account has been blocked. Please contact support.")
 
-    return {"access_token": create_jwt(user.user_id, user.role), "user": serialize_user(user)}
+    return {"access_token": create_jwt(user.user_id, user.role, user.email), "token_type": "bearer", "user": serialize_user(user)}
 
 
 @router.post("/forgot-password/send-otp")

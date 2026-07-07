@@ -1,27 +1,36 @@
 from datetime import timedelta
 from typing import List, Optional
 
-import jwt
-from fastapi import Depends, Header, HTTPException
-from passlib.context import CryptContext
+from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.config import JWT_ALGO, JWT_EXPIRES_DAYS, JWT_SECRET
+from app.core.config import settings
+from app.core.security import (
+    create_access_token,
+    hash_password,
+    normalize_role,
+    pwd_context,
+    role_aliases,
+    verify_access_token,
+    verify_password,
+)
 from app.database import get_db
+from app.dependencies.auth import get_current_user as auth_required
+from app.dependencies.auth import require_roles
 from app.models_sql import User, UserSession
 from app.utils import now_utc
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-
-def create_jwt(user_id: str, role: str) -> str:
-    payload = {
+def create_jwt(user_id: str, role: str, email: str | None = None) -> str:
+    data = {
         "sub": user_id,
-        "role": role,
-        "exp": now_utc() + timedelta(days=JWT_EXPIRES_DAYS),
-        "iat": now_utc(),
+        "email": email,
+        "role": normalize_role(role),
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+    return create_access_token(
+        data,
+        expires_delta=timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
 
 
 def get_user_from_token(token: str, db: Session) -> Optional[User]:
@@ -30,9 +39,9 @@ def get_user_from_token(token: str, db: Session) -> Optional[User]:
 
     user_id = None
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+        payload = verify_access_token(token)
         user_id = payload.get("sub")
-    except jwt.PyJWTError:
+    except HTTPException:
         session = db.query(UserSession).filter(UserSession.token == token).first()
         if not session:
             session = db.query(UserSession).filter(UserSession.session_id == token).first()
@@ -47,28 +56,9 @@ def get_user_from_token(token: str, db: Session) -> Optional[User]:
     return db.query(User).filter(User.user_id == user_id).first()
 
 
-def auth_required(
-    authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db),
-) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    token = authorization.replace("Bearer ", "").strip()
-    user = get_user_from_token(token, db)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return user
-
-
 def role_required(roles: List[str]):
-    def checker(user: User = Depends(auth_required)):
-        if user.role not in roles:
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        return user
-
-    return checker
+    return require_roles(*roles)
 
 
 def is_seller_like(user: User) -> bool:
-    return bool(user and user.role in ("Seller", "Dealer"))
+    return bool(user and role_aliases(user.role).intersection({"SELLER", "DEALER"}))

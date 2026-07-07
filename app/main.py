@@ -2,14 +2,14 @@ import logging
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import models_sql
 from app.auth import pwd_context
-from app.config import ADMIN_EMAIL, ADMIN_MOBILE_NUMBER, ADMIN_PASSWORD, CORS_ORIGINS, MAX_REQUEST_SIZE_BYTES, MAX_REQUEST_SIZE_MB, OLD_ADMIN_EMAIL
+from app.config import ADMIN_EMAIL, ADMIN_MOBILE_NUMBER, ADMIN_PASSWORD, MAX_REQUEST_SIZE_BYTES, MAX_REQUEST_SIZE_MB, OLD_ADMIN_EMAIL
 from app.database import Base, SessionLocal, engine, ensure_database_exists
+from app.middleware.cors import configure_cors
 from app.models_sql import User
 from app.routes import admin, auth, chat_requests, chats, community_requests, newsletter, notifications, payments, plans, products, reports, users, ws
 from app.services.users import sync_role_profile
@@ -35,6 +35,11 @@ async def request_size_limit(request: Request, call_next):
 @api.get("/")
 def root():
     return {"app": "DealsKB Multi-Product AutoBid Backend", "status": "ok"}
+
+
+@api.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 api.include_router(auth.router)
@@ -148,12 +153,6 @@ def startup():
         db.close()
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 app.include_router(api)

@@ -78,19 +78,32 @@ def list_products(
 ):
     query = db.query(Product)
 
+    is_admin = False
+    current_user = None
+    if authorization and authorization.startswith("Bearer "):
+        current_user = get_user_from_token(authorization.replace("Bearer ", "").strip(), db)
+        if current_user and current_user.role == "Admin":
+            is_admin = True
+
     if mine:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Auth required for mine=true")
-        user = get_user_from_token(authorization.replace("Bearer ", "").strip(), db)
-        if not user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        query = query.filter(Product.seller_id == user.user_id)
+        if not current_user:
+            if authorization and authorization.startswith("Bearer "):
+                current_user = get_user_from_token(authorization.replace("Bearer ", "").strip(), db)
+            if not current_user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+        query = query.filter(Product.seller_id == current_user.user_id)
+    else:
+        if not is_admin:
+            query = query.filter(Product.status.in_(["approved", "live", "ended"]))
 
     if status_filter:
         if status_filter == "live_or_upcoming":
             query = query.filter(Product.status.in_(["approved", "live"]))
         else:
-            query = query.filter(Product.status == status_filter)
+            if not is_admin and not mine and status_filter in ["pending", "rejected", "cancelled"]:
+                query = query.filter(Product.status == "never-match-this-status")
+            else:
+                query = query.filter(Product.status == status_filter)
 
     if product_type and product_type != "all":
         query = query.filter(Product.product_type == product_type.lower().strip())

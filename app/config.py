@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env", override=True)
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "change-this-secret-key")
-JWT_ALGO = "HS256"
+JWT_SECRET = os.environ.get("JWT_SECRET_KEY") or os.environ.get("JWT_SECRET", "change-this-secret-key")
+JWT_ALGO = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_DAYS = int(os.environ.get("JWT_EXPIRES_DAYS", "7"))
 AUCTION_DURATION_SECONDS = int(os.environ.get("AUCTION_DURATION_SECONDS", "120"))
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
