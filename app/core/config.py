@@ -22,6 +22,8 @@ class Settings:
         "http://127.0.0.1:3000",
         "https://dealskb.com",
         "https://www.dealskb.com",
+        "https://dealskb.com"
+
     ]
 
     @property

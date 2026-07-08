@@ -140,6 +140,54 @@ def list_public_products(
     )
 
 
+def serialize_public_auction_product(product: Product) -> dict:
+    payload = serialize_product(product)
+    for field in ("seller_id", "expected_price", "documents", "highest_bidder_id", "winner_id"):
+        payload.pop(field, None)
+    return payload
+
+
+def serialize_public_auction_bid(bid: Bid) -> dict:
+    payload = serialize_bid(bid)
+    payload.pop("bidder_id", None)
+    return payload
+
+
+@router.get("/public/{product_id}")
+def get_public_auction_product(product_id: str, db: Session = Depends(get_db)):
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    if product.status == "live":
+        maybe_end_auction(db, product_id)
+        db.refresh(product)
+
+    if product.status not in ("approved", "live", "ended", "cancelled"):
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    return serialize_public_auction_product(product)
+
+
+@router.get("/public/{product_id}/bids")
+def get_public_auction_bids(product_id: str, db: Session = Depends(get_db)):
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not product or product.status not in ("approved", "live", "ended", "cancelled"):
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    if product.status == "live":
+        maybe_end_auction(db, product_id)
+
+    bids = (
+        db.query(Bid)
+        .filter(Bid.product_id == product_id)
+        .order_by(Bid.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    return [serialize_public_auction_bid(bid) for bid in bids]
+
+
 @router.get("/{product_id}")
 def get_product(product_id: str, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.product_id == product_id).first()
