@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -23,13 +24,46 @@ api = APIRouter(prefix="/api")
 
 @app.middleware("http")
 async def request_size_limit(request: Request, call_next):
+    start = time.perf_counter()
+    path = request.url.path
+    method = request.method
+    origin = request.headers.get("origin", "-")
+    content_type = request.headers.get("content-type", "-")
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > MAX_REQUEST_SIZE_BYTES:
+        logger.warning(
+            "%s %s origin=%s content_type=%s status=413 duration_ms=0",
+            method,
+            path,
+            origin,
+            content_type,
+        )
         return JSONResponse(
             status_code=413,
             content={"detail": f"Request body too large. Maximum allowed size is {MAX_REQUEST_SIZE_MB} MB"},
         )
-    return await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "%s %s origin=%s content_type=%s failed",
+            method,
+            path,
+            origin,
+            content_type,
+        )
+        raise
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    logger.info(
+        "%s %s origin=%s content_type=%s status=%s duration_ms=%s",
+        method,
+        path,
+        origin,
+        content_type,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 @api.get("/")
