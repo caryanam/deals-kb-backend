@@ -66,6 +66,12 @@ def serialize_product(product) -> dict:
         "updated_at": iso(value(product, "updated_at")),
         "approved_at": iso(value(product, "approved_at")),
         "rejected_at": iso(value(product, "rejected_at")),
+        "parent_product_id": value(product, "parent_product_id"),
+        "is_relisted": bool(value(product, "is_relisted", False)),
+        "relist_count": value(product, "relist_count", 0) or 0,
+        "relist_payment_status": value(product, "relist_payment_status"),
+        "relist_payment_order_id": value(product, "relist_payment_order_id"),
+        "relist_payment_id": value(product, "relist_payment_id"),
     }
 
 

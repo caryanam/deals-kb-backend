@@ -464,3 +464,218 @@ def get_bids(product_id: str, db: Session = Depends(get_db)):
         .all()
     )
     return [serialize_bid(bid) for bid in bids]
+
+
+from pydantic import BaseModel
+
+class RelistSubmitIn(BaseModel):
+    category: str
+    title: str
+    brand: str
+    model: str
+    condition: str
+    description: str
+    product_price: float
+    expected_price: float
+    photos: List[str]
+    video: Optional[str] = None
+    specifications: dict
+    documents: dict
+    razorpayOrderId: str
+    razorpayPaymentId: str
+    razorpaySignature: str
+
+class RelistFailIn(BaseModel):
+    razorpayOrderId: str
+    reason: str
+
+
+@router.get("/{product_id}/relist-data")
+def get_relist_data(
+    product_id: str,
+    user: User = Depends(auth_required),
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if product.seller_id != user.user_id:
+        raise HTTPException(status_code=403, detail="You do not own this listing")
+    
+    is_unsold = (product.status == "ended" and not product.winner_id)
+    if not is_unsold:
+        raise HTTPException(status_code=400, detail="This listing is not eligible for relisting")
+        
+    return serialize_product(product)
+
+
+@router.post("/{product_id}/relist/create-order")
+async def create_relist_order(
+    product_id: str,
+    user: User = Depends(auth_required),
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if product.seller_id != user.user_id:
+        raise HTTPException(status_code=403, detail="You do not own this listing")
+        
+    import httpx
+    from app.routes.payments import _razorpay_credentials, _require_razorpay_config
+    _require_razorpay_config()
+    key_id, key_secret, currency = _razorpay_credentials()
+    
+    amount = 100
+    receipt = f"rcpt_relist_{uuid.uuid4().hex[:20]}"
+    payload = {
+        "amount": amount,
+        "currency": currency,
+        "receipt": receipt,
+        "payment_capture": 1,
+        "notes": {
+            "user_id": user.user_id,
+            "product_id": product_id,
+            "purpose": "relist",
+        },
+    }
+    
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            "https://api.razorpay.com/v1/orders",
+            json=payload,
+            auth=(key_id, key_secret),
+        )
+        
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Razorpay order creation failed: {response.text}",
+        )
+        
+    order = response.json()
+    
+    product.relist_payment_order_id = order["id"]
+    product.relist_payment_status = "created"
+    db.commit()
+    
+    return {
+        "orderId": order["id"],
+        "amount": amount,
+        "currency": currency,
+        "key_id": key_id
+    }
+
+
+@router.post("/{product_id}/relist/submit")
+def submit_relist(
+    product_id: str,
+    body: RelistSubmitIn,
+    user: User = Depends(auth_required),
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Original listing not found")
+    if product.seller_id != user.user_id:
+        raise HTTPException(status_code=403, detail="You do not own this listing")
+        
+    from app.routes.payments import _verify_signature
+    from app.models_sql import PaymentTransaction
+    
+    signature_match, _ = _verify_signature(
+        body.razorpayOrderId,
+        body.razorpayPaymentId,
+        body.razorpaySignature,
+    )
+    if not signature_match:
+        raise HTTPException(status_code=400, detail="Payment verification failed")
+        
+    product.relist_payment_status = "paid"
+    product.relist_payment_id = body.razorpayPaymentId
+    product.relist_payment_order_id = body.razorpayOrderId
+    
+    new_product = Product(
+        product_id=f"prod_{uuid.uuid4().hex[:12]}",
+        seller_id=user.user_id,
+        seller_name=user.name or "",
+        title=body.title,
+        product_type=body.category.lower().strip(),
+        brand=body.brand,
+        model=body.model,
+        product_condition=body.condition,
+        description=body.description,
+        product_price=body.product_price,
+        expected_price=body.expected_price,
+        photos=body.photos,
+        video=body.video,
+        specifications=body.specifications,
+        documents=body.documents,
+        status="pending",
+        parent_product_id=product_id,
+        is_relisted=True,
+        relist_count=(product.relist_count or 0) + 1,
+        bid_count=0
+    )
+    db.add(new_product)
+    
+    new_tx = PaymentTransaction(
+        payment_id=f"paytxn_{uuid.uuid4().hex[:12]}",
+        user_id=user.user_id,
+        user_role=user.role,
+        plan_id=f"relist_{body.category.lower()}",
+        plan_name=f"Relist fee - {body.category}",
+        amount=100,
+        currency="INR",
+        razorpay_order_id=body.razorpayOrderId,
+        razorpay_payment_id=body.razorpayPaymentId,
+        razorpay_signature=body.razorpaySignature,
+        status="paid",
+        receipt=f"rcpt_relist_{uuid.uuid4().hex[:20]}",
+        notes={"old_product_id": product_id, "new_product_id": new_product.product_id}
+    )
+    db.add(new_tx)
+    
+    create_notification(
+        db,
+        user_id=user.user_id,
+        title="Product Relisted",
+        message=f"Your listing '{body.title}' has been relisted and submitted for verification.",
+        notif_type="product_submitted",
+        product_id=new_product.product_id,
+    )
+    notify_admins(
+        db,
+        "New relisted product submitted",
+        f"{user.name} relisted '{body.title}'.",
+        "product_submitted",
+        new_product.product_id,
+    )
+    
+    db.commit()
+    db.refresh(new_product)
+    
+    return {
+        "message": "Relisted listing submitted for admin approval",
+        "newListingId": new_product.product_id,
+        "status": "pending"
+    }
+
+
+@router.post("/{product_id}/relist/payment-failed")
+def relist_payment_failed(
+    product_id: str,
+    body: RelistFailIn,
+    user: User = Depends(auth_required),
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if product.seller_id != user.user_id:
+        raise HTTPException(status_code=403, detail="You do not own this listing")
+        
+    product.relist_payment_status = "failed"
+    product.relist_payment_order_id = body.razorpayOrderId
+    db.commit()
+    return {"message": "Relist payment failed status recorded"}

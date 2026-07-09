@@ -92,7 +92,7 @@ async def create_payment_order(
 
     receipt = f"rcpt_{uuid.uuid4().hex[:28]}"
     payload = {
-        "amount": plan["amount"],
+        "amount": 100,  # Hardcoded 1 Rupee (100 paise) for testing/override
         "currency": plan.get("currency") or currency,
         "receipt": receipt,
         "payment_capture": 1,
@@ -126,7 +126,7 @@ async def create_payment_order(
         user_role=user.role,
         plan_id=plan["plan_id"],
         plan_name=plan["name"],
-        amount=plan["amount"],
+        amount=100,  # Hardcoded 1 Rupee (100 paise) in database
         currency=payload["currency"],
         razorpay_order_id=order["id"],
         status="created",

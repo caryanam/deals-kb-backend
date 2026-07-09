@@ -157,6 +157,12 @@ class Product(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     approved_at = Column(DateTime)
     rejected_at = Column(DateTime)
+    parent_product_id = Column(String(100), nullable=True)
+    is_relisted = Column(Boolean, default=False)
+    relist_count = Column(Integer, default=0)
+    relist_payment_status = Column(String(50), nullable=True)
+    relist_payment_order_id = Column(String(100), nullable=True)
+    relist_payment_id = Column(String(100), nullable=True)
 
 
 class Bid(Base):
