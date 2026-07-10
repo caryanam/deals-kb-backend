@@ -220,10 +220,13 @@ async def create_payment_order(
         "gateway": "cashfree",
         "cashfree_mode": CASHFREE_ENV,
         "order_id": order["order_id"],
+        "orderId": order["order_id"],
         "payment_session_id": order.get("payment_session_id"),
+        "paymentSessionId": order.get("payment_session_id"),
         "amount": payment.amount,
         "currency": payment.currency,
         "order_status": order.get("order_status"),
+        "orderStatus": order.get("order_status"),
         "payment": serialize_payment(payment),
     }
 
