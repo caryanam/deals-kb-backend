@@ -133,7 +133,6 @@ def startup():
                 "ALTER TABLE notifications ADD COLUMN cleared_at DATETIME NULL",
                 "ALTER TABLE chat_conversations ADD COLUMN request_id VARCHAR(100) NULL",
                 "ALTER TABLE payment_transactions ADD COLUMN payment_gateway VARCHAR(30) DEFAULT 'cashfree'",
-                "ALTER TABLE payment_transactions MODIFY razorpay_order_id VARCHAR(100) NULL",
                 "ALTER TABLE payment_transactions ADD COLUMN cashfree_order_id VARCHAR(100) NULL",
                 "ALTER TABLE payment_transactions ADD COLUMN cashfree_payment_session_id TEXT NULL",
                 "ALTER TABLE payment_transactions ADD COLUMN cashfree_order_status VARCHAR(30) NULL",

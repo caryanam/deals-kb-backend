@@ -224,8 +224,6 @@ def serialize_payment(payment) -> dict:
         "amount": value(payment, "amount"),
         "currency": value(payment, "currency"),
         "payment_gateway": value(payment, "payment_gateway"),
-        "razorpay_order_id": value(payment, "razorpay_order_id"),
-        "razorpay_payment_id": value(payment, "razorpay_payment_id"),
         "cashfree_order_id": value(payment, "cashfree_order_id"),
         "cashfree_payment_session_id": value(payment, "cashfree_payment_session_id"),
         "cashfree_order_status": value(payment, "cashfree_order_status"),

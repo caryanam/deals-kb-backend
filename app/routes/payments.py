@@ -124,14 +124,14 @@ async def fetch_cashfree_order(order_id: str) -> dict:
 
 
 def _find_payment_by_any_order_id(db: Session, user_id: str, body: PaymentFailIn):
-    order_id = body.cashfree_order_id or body.order_id or body.razorpay_order_id
+    order_id = body.cashfree_order_id or body.order_id
     if not order_id:
         raise HTTPException(status_code=400, detail="order_id is required")
 
     payment = db.query(PaymentTransaction).filter(
         PaymentTransaction.user_id == user_id,
     ).filter(
-        (PaymentTransaction.cashfree_order_id == order_id) | (PaymentTransaction.razorpay_order_id == order_id)
+        PaymentTransaction.cashfree_order_id == order_id
     ).first()
     return order_id, payment
 

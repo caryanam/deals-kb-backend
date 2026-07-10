@@ -20,10 +20,6 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
 ADMIN_MOBILE_NUMBER = os.environ.get("ADMIN_MOBILE_NUMBER", "9123456789")
 OLD_ADMIN_EMAIL = "admin@vehiclebid.com"
 
-RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
-RAZORPAY_CURRENCY = os.environ.get("RAZORPAY_CURRENCY", "INR")
-
 CASHFREE_APP_ID = os.environ.get("CASHFREE_APP_ID", "")
 CASHFREE_SECRET_KEY = os.environ.get("CASHFREE_SECRET_KEY", "")
 CASHFREE_ENV = os.environ.get("CASHFREE_ENV", "sandbox").lower()
