@@ -57,6 +57,21 @@ MULTIPART_DOCUMENT_KEYS = {
 }
 
 
+from app.config import UPLOAD_DIR
+
+ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_IMAGE_MIME = {"image/jpeg", "image/png", "image/webp"}
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
+
+ALLOWED_VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+ALLOWED_VIDEO_MIME = {"video/mp4", "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/webm"}
+MAX_VIDEO_SIZE = 100 * 1024 * 1024  # 100 MB
+
+ALLOWED_DOC_EXT = {".pdf", ".jpg", ".jpeg", ".png"}
+ALLOWED_DOC_MIME = {"application/pdf", "image/jpeg", "image/png"}
+MAX_DOC_SIZE = 20 * 1024 * 1024  # 20 MB
+
+
 def parse_json_field(value, default):
     if value is None or value == "":
         return default
@@ -68,13 +83,108 @@ def parse_json_field(value, default):
         raise HTTPException(status_code=400, detail="Invalid JSON field in multipart request") from exc
 
 
-async def upload_to_data_url(upload: UploadFile) -> str:
-    content = await upload.read()
-    if not content:
-        raise HTTPException(status_code=400, detail=f"Uploaded file '{upload.filename or 'unknown'}' is empty")
-    content_type = upload.content_type or "application/octet-stream"
-    encoded = base64.b64encode(content).decode("ascii")
-    return f"data:{content_type};base64,{encoded}"
+async def save_and_validate_file(
+    upload: UploadFile,
+    max_size: int,
+    allowed_exts: set[str],
+    allowed_mimes: set[str]
+) -> str:
+    filename = upload.filename or "file"
+    ext = Path(filename).suffix.lower()
+    if ext not in allowed_exts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File extension '{ext}' is not allowed. Supported: {', '.join(allowed_exts)}"
+        )
+
+    mime = upload.content_type
+    if mime not in allowed_mimes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"MIME type '{mime}' is not allowed. Supported: {', '.join(allowed_mimes)}"
+        )
+
+    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    file_path = UPLOAD_DIR / unique_filename
+
+    size = 0
+    try:
+        with open(file_path, "wb") as buffer:
+            while chunk := await upload.read(16384):  # 16KB chunks
+                size += len(chunk)
+                if size > max_size:
+                    buffer.close()
+                    if file_path.exists():
+                        file_path.unlink()
+                    max_mb = max_size / (1024 * 1024)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File '{filename}' exceeds max size of {max_mb:.0f} MB"
+                    )
+                buffer.write(chunk)
+    except Exception as exc:
+        if file_path.exists():
+            file_path.unlink()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {str(exc)}") from exc
+
+    return f"/uploads/{unique_filename}"
+
+
+async def handle_file_value(
+    value,
+    max_size: int,
+    allowed_exts: set[str],
+    allowed_mimes: set[str]
+) -> Optional[str]:
+    if not value:
+        return None
+    if isinstance(value, UploadFile) and value.filename:
+        return await save_and_validate_file(value, max_size, allowed_exts, allowed_mimes)
+    if isinstance(value, str):
+        val_str = value.strip()
+        if val_str.startswith("http") or val_str.startswith("/uploads/"):
+            return val_str
+        if val_str.startswith("data:"):
+            try:
+                header, base64_data = val_str.split(",", 1)
+                mime = header.split(";", 1)[0].split(":", 1)[1]
+                if mime not in allowed_mimes:
+                    raise HTTPException(status_code=400, detail=f"MIME type '{mime}' is not allowed")
+                
+                ext = None
+                if mime == "image/jpeg":
+                    ext = ".jpg"
+                elif mime == "image/png":
+                    ext = ".png"
+                elif mime == "image/webp":
+                    ext = ".webp"
+                elif mime == "video/mp4":
+                    ext = ".mp4"
+                elif mime == "application/pdf":
+                    ext = ".pdf"
+                else:
+                    ext = ".bin"
+                
+                if ext not in allowed_exts:
+                    raise HTTPException(status_code=400, detail=f"Inferred extension '{ext}' is not allowed")
+
+                file_content = base64.b64decode(base64_data)
+                if len(file_content) > max_size:
+                    max_mb = max_size / (1024 * 1024)
+                    raise HTTPException(status_code=413, detail=f"Base64 file exceeds max size of {max_mb:.0f} MB")
+                
+                unique_filename = f"{uuid.uuid4().hex}{ext}"
+                file_path = UPLOAD_DIR / unique_filename
+                with open(file_path, "wb") as f:
+                    f.write(file_content)
+                return f"/uploads/{unique_filename}"
+            except Exception as exc:
+                if isinstance(exc, HTTPException):
+                    raise
+                raise HTTPException(status_code=400, detail="Invalid Base64 file data") from exc
+    return None
 
 
 async def parse_product_request(request: Request) -> ProductIn:
@@ -87,6 +197,28 @@ async def parse_product_request(request: Request) -> ProductIn:
             payload = await request.json()
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        
+        if isinstance(payload.get("photos"), list):
+            processed_photos = []
+            for p in payload["photos"]:
+                saved = await handle_file_value(p, MAX_IMAGE_SIZE, ALLOWED_IMAGE_EXT, ALLOWED_IMAGE_MIME)
+                if saved:
+                    processed_photos.append(saved)
+            payload["photos"] = processed_photos
+            
+        if payload.get("video"):
+            saved = await handle_file_value(payload["video"], MAX_VIDEO_SIZE, ALLOWED_VIDEO_EXT, ALLOWED_VIDEO_MIME)
+            if saved:
+                payload["video"] = saved
+                
+        if isinstance(payload.get("documents"), dict):
+            processed_docs = {}
+            for k, v in payload["documents"].items():
+                saved = await handle_file_value(v, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+                if saved:
+                    processed_docs[k] = saved
+            payload["documents"] = processed_docs
+
         try:
             return ProductIn.model_validate(payload)
         except ValidationError as exc:
@@ -94,56 +226,36 @@ async def parse_product_request(request: Request) -> ProductIn:
 
     form = await request.form()
 
-    async def collect_uploads(keys: tuple[str, ...]) -> List[str]:
-        files: List[str] = []
-        for key in keys:
-            for item in form.getlist(key):
-                if isinstance(item, UploadFile) and item.filename:
-                    files.append(await upload_to_data_url(item))
-                elif isinstance(item, str) and item.strip():
-                    files.append(item.strip())
-        return files
-
-    photos = await collect_uploads(MULTIPART_PHOTO_KEYS)
+    photos = []
+    for key in MULTIPART_PHOTO_KEYS:
+        for item in form.getlist(key):
+            saved = await handle_file_value(item, MAX_IMAGE_SIZE, ALLOWED_IMAGE_EXT, ALLOWED_IMAGE_MIME)
+            if saved:
+                photos.append(saved)
 
     video = None
     for key in MULTIPART_VIDEO_KEYS:
         value = form.get(key)
-        if isinstance(value, UploadFile) and value.filename:
-            video = await upload_to_data_url(value)
-            break
-        if isinstance(value, str) and value.strip():
-            video = value.strip()
+        saved = await handle_file_value(value, MAX_VIDEO_SIZE, ALLOWED_VIDEO_EXT, ALLOWED_VIDEO_MIME)
+        if saved:
+            video = saved
             break
 
     specifications = parse_json_field(form.get("specifications") or form.get("specs"), {})
     documents = parse_json_field(form.get("documents"), {})
 
-    file_debug = {"photos": len(photos), "video": bool(video), "documents": []}
     for key, value in form.multi_items():
         if key in MULTIPART_SCALAR_KEYS or key in MULTIPART_PHOTO_KEYS or key in MULTIPART_VIDEO_KEYS or key in MULTIPART_DOCUMENT_KEYS:
             continue
-        if isinstance(value, UploadFile) and value.filename:
-            documents[key] = await upload_to_data_url(value)
-            file_debug["documents"].append(key)
+        saved = await handle_file_value(value, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+        if saved:
+            documents[key] = saved
 
     for key in MULTIPART_DOCUMENT_KEYS:
         value = form.get(key)
-        if isinstance(value, UploadFile) and value.filename:
-            documents[key] = await upload_to_data_url(value)
-            if key not in file_debug["documents"]:
-                file_debug["documents"].append(key)
-        elif isinstance(value, str) and value.strip():
-            documents[key] = value.strip()
-            if key not in file_debug["documents"]:
-                file_debug["documents"].append(key)
-
-    logger.info(
-        "create_product multipart received photos=%s video=%s document_keys=%s",
-        file_debug["photos"],
-        file_debug["video"],
-        ",".join(file_debug["documents"]) or "-",
-    )
+        saved = await handle_file_value(value, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+        if saved:
+            documents[key] = saved
 
     payload = {
         "title": (form.get("title") or "").strip(),
@@ -344,10 +456,129 @@ def get_product(product_id: str, db: Session = Depends(get_db)):
     return serialize_product(product)
 
 
+async def parse_product_edit_request(request: Request) -> ProductEditIn:
+    content_type = (request.headers.get("content-type") or "").lower()
+    content_length = request.headers.get("content-length", "-")
+    logger.info("edit_product request content_type=%s content_length=%s", content_type, content_length)
+
+    if "multipart/form-data" not in content_type:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        
+        if isinstance(payload.get("photos"), list):
+            processed_photos = []
+            for p in payload["photos"]:
+                saved = await handle_file_value(p, MAX_IMAGE_SIZE, ALLOWED_IMAGE_EXT, ALLOWED_IMAGE_MIME)
+                if saved:
+                    processed_photos.append(saved)
+            payload["photos"] = processed_photos
+            
+        if payload.get("video"):
+            saved = await handle_file_value(payload["video"], MAX_VIDEO_SIZE, ALLOWED_VIDEO_EXT, ALLOWED_VIDEO_MIME)
+            if saved:
+                payload["video"] = saved
+                
+        if isinstance(payload.get("documents"), dict):
+            processed_docs = {}
+            for k, v in payload["documents"].items():
+                saved = await handle_file_value(v, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+                if saved:
+                    processed_docs[k] = saved
+            payload["documents"] = processed_docs
+
+        try:
+            return ProductEditIn.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    form = await request.form()
+
+    # Process photos:
+    photos = None
+    has_photos = False
+    for key in MULTIPART_PHOTO_KEYS:
+        if form.getlist(key):
+            has_photos = True
+            break
+    if has_photos:
+        photos = []
+        for key in MULTIPART_PHOTO_KEYS:
+            for item in form.getlist(key):
+                saved = await handle_file_value(item, MAX_IMAGE_SIZE, ALLOWED_IMAGE_EXT, ALLOWED_IMAGE_MIME)
+                if saved:
+                    photos.append(saved)
+
+    # Process video:
+    video = None
+    has_video = False
+    for key in MULTIPART_VIDEO_KEYS:
+        if form.get(key) is not None:
+            has_video = True
+            break
+    if has_video:
+        for key in MULTIPART_VIDEO_KEYS:
+            value = form.get(key)
+            saved = await handle_file_value(value, MAX_VIDEO_SIZE, ALLOWED_VIDEO_EXT, ALLOWED_VIDEO_MIME)
+            if saved:
+                video = saved
+                break
+
+    specifications = None
+    if form.get("specifications") or form.get("specs"):
+        specifications = parse_json_field(form.get("specifications") or form.get("specs"), {})
+        
+    documents = None
+    has_documents = False
+    for key in MULTIPART_DOCUMENT_KEYS:
+        if form.get(key) is not None:
+            has_documents = True
+            break
+    if form.get("documents"):
+        has_documents = True
+
+    if has_documents:
+        documents = parse_json_field(form.get("documents"), {})
+        for key, value in form.multi_items():
+            if key in MULTIPART_SCALAR_KEYS or key in MULTIPART_PHOTO_KEYS or key in MULTIPART_VIDEO_KEYS or key in MULTIPART_DOCUMENT_KEYS:
+                continue
+            saved = await handle_file_value(value, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+            if saved:
+                documents[key] = saved
+
+        for key in MULTIPART_DOCUMENT_KEYS:
+            value = form.get(key)
+            saved = await handle_file_value(value, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+            if saved:
+                documents[key] = saved
+
+    payload = {}
+    for key in MULTIPART_SCALAR_KEYS:
+        val = form.get(key)
+        if val is not None:
+            payload[key] = val.strip()
+
+    if photos is not None:
+        payload["photos"] = photos
+    if video is not None:
+        payload["video"] = video
+    if specifications is not None:
+        payload["specifications"] = specifications
+    if documents is not None:
+        payload["documents"] = documents
+
+    try:
+        return ProductEditIn.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
 @router.patch("/{product_id}")
-def edit_product(
+@router.put("/{product_id}")
+async def edit_product(
     product_id: str,
-    body: ProductEditIn,
+    request: Request,
     user: User = Depends(auth_required),
     db: Session = Depends(get_db),
 ):
@@ -361,6 +592,7 @@ def edit_product(
     if user.role != "Admin" and product.status not in ("pending", "rejected"):
         raise HTTPException(status_code=400, detail="Seller or dealer can edit only pending or rejected listings")
 
+    body = await parse_product_edit_request(request)
     data = body.model_dump(exclude_unset=True)
     if "product_price" in data and data["product_price"] is not None and data["product_price"] <= 0:
         raise HTTPException(status_code=400, detail="product_price must be greater than 0")
@@ -691,10 +923,101 @@ async def create_relist_order(
     }
 
 
+async def parse_relist_submit_request(request: Request) -> RelistSubmitIn:
+    content_type = (request.headers.get("content-type") or "").lower()
+    content_length = request.headers.get("content-length", "-")
+    logger.info("relist_submit request content_type=%s content_length=%s", content_type, content_length)
+
+    if "multipart/form-data" not in content_type:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        
+        if isinstance(payload.get("photos"), list):
+            processed_photos = []
+            for p in payload["photos"]:
+                saved = await handle_file_value(p, MAX_IMAGE_SIZE, ALLOWED_IMAGE_EXT, ALLOWED_IMAGE_MIME)
+                if saved:
+                    processed_photos.append(saved)
+            payload["photos"] = processed_photos
+            
+        if payload.get("video"):
+            saved = await handle_file_value(payload["video"], MAX_VIDEO_SIZE, ALLOWED_VIDEO_EXT, ALLOWED_VIDEO_MIME)
+            if saved:
+                payload["video"] = saved
+                
+        if isinstance(payload.get("documents"), dict):
+            processed_docs = {}
+            for k, v in payload["documents"].items():
+                saved = await handle_file_value(v, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+                if saved:
+                    processed_docs[k] = saved
+            payload["documents"] = processed_docs
+
+        try:
+            return RelistSubmitIn.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    form = await request.form()
+
+    photos = []
+    for key in MULTIPART_PHOTO_KEYS:
+        for item in form.getlist(key):
+            saved = await handle_file_value(item, MAX_IMAGE_SIZE, ALLOWED_IMAGE_EXT, ALLOWED_IMAGE_MIME)
+            if saved:
+                photos.append(saved)
+
+    video = None
+    for key in MULTIPART_VIDEO_KEYS:
+        value = form.get(key)
+        saved = await handle_file_value(value, MAX_VIDEO_SIZE, ALLOWED_VIDEO_EXT, ALLOWED_VIDEO_MIME)
+        if saved:
+            video = saved
+            break
+
+    specifications = parse_json_field(form.get("specifications") or form.get("specs"), {})
+    documents = parse_json_field(form.get("documents"), {})
+
+    for key, value in form.multi_items():
+        if key in MULTIPART_SCALAR_KEYS or key in MULTIPART_PHOTO_KEYS or key in MULTIPART_VIDEO_KEYS or key in MULTIPART_DOCUMENT_KEYS:
+            continue
+        saved = await handle_file_value(value, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+        if saved:
+            documents[key] = saved
+
+    for key in MULTIPART_DOCUMENT_KEYS:
+        value = form.get(key)
+        saved = await handle_file_value(value, MAX_DOC_SIZE, ALLOWED_DOC_EXT, ALLOWED_DOC_MIME)
+        if saved:
+            documents[key] = saved
+
+    payload = {
+        "title": (form.get("title") or "").strip(),
+        "category": (form.get("category") or form.get("product_type") or "").strip(),
+        "brand": (form.get("brand") or "").strip(),
+        "model": (form.get("model") or "").strip(),
+        "condition": (form.get("condition") or "").strip(),
+        "description": (form.get("description") or "").strip(),
+        "product_price": form.get("product_price") or form.get("price"),
+        "expected_price": form.get("expected_price") or form.get("expectedPrice"),
+        "photos": photos,
+        "video": video,
+        "specifications": specifications,
+        "documents": documents,
+        "cashfreeOrderId": (form.get("cashfreeOrderId") or form.get("cashfree_order_id") or "").strip(),
+    }
+    try:
+        return RelistSubmitIn.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
 @router.post("/{product_id}/relist/submit")
 async def submit_relist(
     product_id: str,
-    body: RelistSubmitIn,
+    request: Request,
     user: User = Depends(auth_required),
     db: Session = Depends(get_db),
 ):
@@ -703,6 +1026,8 @@ async def submit_relist(
         raise HTTPException(status_code=404, detail="Original listing not found")
     if product.seller_id != user.user_id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
+        
+    body = await parse_relist_submit_request(request)
         
     from app.routes.payments import fetch_cashfree_order
     from app.models_sql import PaymentTransaction

@@ -28,7 +28,23 @@ def serialize_user(user) -> dict:
     }
 
 
+from app.config import BACKEND_URL
+
+def format_file_url(url: str) -> str:
+    if not url:
+        return url
+    if url.startswith("/uploads/"):
+        return f"{BACKEND_URL.rstrip('/')}{url}"
+    return url
+
 def serialize_product(product) -> dict:
+    photos_raw = value(product, "photos", []) or []
+    photos = [format_file_url(p) for p in photos_raw]
+    video = format_file_url(value(product, "video"))
+    
+    docs_raw = value(product, "documents", {}) or {}
+    documents = {k: format_file_url(v) for k, v in docs_raw.items()}
+
     return {
         "product_id": value(product, "product_id"),
         "seller_id": value(product, "seller_id"),
@@ -42,10 +58,10 @@ def serialize_product(product) -> dict:
         "product_price": money(value(product, "product_price")),
         "expected_price": money(value(product, "expected_price")),
         "currency": "INR",
-        "photos": value(product, "photos", []) or [],
-        "video": value(product, "video"),
+        "photos": photos,
+        "video": video,
         "specifications": value(product, "specifications", {}) or {},
-        "documents": value(product, "documents", {}) or {},
+        "documents": documents,
         "status": value(product, "status"),
         "reject_reason": value(product, "reject_reason"),
         "auction_start": iso(value(product, "auction_start")),

@@ -198,6 +198,10 @@ def startup():
         db.close()
 
 
+from fastapi.staticfiles import StaticFiles
+from app.config import UPLOAD_DIR
+
 configure_cors(app)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.include_router(api)
