@@ -11,7 +11,7 @@ JWT_ALGO = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_DAYS = int(os.environ.get("JWT_EXPIRES_DAYS", "7"))
 AUCTION_DURATION_SECONDS = int(os.environ.get("AUCTION_DURATION_SECONDS", "120"))
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
-MAX_REQUEST_SIZE_MB = int(os.environ.get("MAX_REQUEST_SIZE_MB", "50"))
+MAX_REQUEST_SIZE_MB = int(os.environ.get("MAX_REQUEST_SIZE_MB", "100"))
 MAX_REQUEST_SIZE_BYTES = MAX_REQUEST_SIZE_MB * 1024 * 1024
 
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
