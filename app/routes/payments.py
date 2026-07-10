@@ -1,14 +1,17 @@
-import hashlib
-import hmac
 import uuid
 
 import httpx
-from dotenv import dotenv_values
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.auth import auth_required
-from app.config import RAZORPAY_CURRENCY, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, ROOT_DIR
+from app.config import (
+    CASHFREE_API_VERSION,
+    CASHFREE_APP_ID,
+    CASHFREE_BASE_URL,
+    CASHFREE_ENV,
+    CASHFREE_SECRET_KEY,
+)
 from app.database import get_db
 from app.models import PaymentFailIn, PaymentOrderCreate, PaymentVerifyIn
 from app.models_sql import PaymentTransaction, User
@@ -18,45 +21,129 @@ from app.utils import now_utc
 
 router = APIRouter(prefix="/payments", tags=["payments"])
 
-def _razorpay_credentials():
-    env_values = dotenv_values(ROOT_DIR / ".env")
-    key_id = env_values.get("RAZORPAY_KEY_ID") or RAZORPAY_KEY_ID
-    key_secret = env_values.get("RAZORPAY_KEY_SECRET") or RAZORPAY_KEY_SECRET
-    currency = env_values.get("RAZORPAY_CURRENCY") or RAZORPAY_CURRENCY
-    return key_id, key_secret, currency
+
+def _cashfree_credentials():
+    return CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_ENV, CASHFREE_BASE_URL, CASHFREE_API_VERSION
 
 
-def _require_razorpay_config():
-    key_id, key_secret, _ = _razorpay_credentials()
-    if not key_id or not key_secret:
-        raise HTTPException(status_code=500, detail="Razorpay credentials are not configured")
+def _require_cashfree_config():
+    app_id, secret_key, *_ = _cashfree_credentials()
+    if not app_id or not secret_key:
+        raise HTTPException(status_code=500, detail="Cashfree credentials are not configured")
 
 
-def _log_razorpay_config():
-    key_id, key_secret, _ = _razorpay_credentials()
-    print("RAZORPAY_KEY_ID:", key_id, flush=True)
-    print("RAZORPAY_MODE:", "test" if key_id.startswith("rzp_test_") else "live" if key_id.startswith("rzp_live_") else "unknown", flush=True)
-    print("RAZORPAY_KEY_SECRET loaded:", bool(key_secret), flush=True)
-    print("RAZORPAY_KEY_SECRET length:", len(key_secret or ""), flush=True)
+def _log_cashfree_config():
+    app_id, secret_key, mode, base_url, api_version = _cashfree_credentials()
+    print("CASHFREE_APP_ID:", app_id, flush=True)
+    print("CASHFREE_ENV:", mode, flush=True)
+    print("CASHFREE_BASE_URL:", base_url, flush=True)
+    print("CASHFREE_API_VERSION:", api_version, flush=True)
+    print("CASHFREE_SECRET_KEY loaded:", bool(secret_key), flush=True)
+    print("CASHFREE_SECRET_KEY length:", len(secret_key or ""), flush=True)
 
 
-def _generate_signature(order_id: str, payment_id: str) -> str:
-    _, key_secret, _ = _razorpay_credentials()
-    payload = f"{order_id}|{payment_id}".encode("utf-8")
-    return hmac.new(key_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+def _cashfree_headers():
+    app_id, secret_key, _, _, api_version = _cashfree_credentials()
+    return {
+        "Content-Type": "application/json",
+        "x-client-id": app_id,
+        "x-client-secret": secret_key,
+        "x-api-version": api_version,
+    }
 
 
-def _verify_signature(order_id: str, payment_id: str, signature: str) -> tuple[bool, str]:
-    expected = _generate_signature(order_id, payment_id)
-    return hmac.compare_digest(expected, signature), expected
+def _amount_rupees(amount_paise: int) -> float:
+    return round(amount_paise / 100, 2)
+
+
+def _normalize_phone(mobile_number: str | None) -> str:
+    digits = "".join(ch for ch in str(mobile_number or "") if ch.isdigit())
+    if len(digits) >= 10:
+        return digits[-10:]
+    return "9999999999"
+
+
+def _is_cashfree_paid(order: dict) -> bool:
+    return str(order.get("order_status") or "").upper() == "PAID"
+
+
+async def create_cashfree_order(*, amount_paise: int, currency: str, user: User, order_tags: dict | None = None) -> dict:
+    _require_cashfree_config()
+    _log_cashfree_config()
+    _, _, _, base_url, _ = _cashfree_credentials()
+
+    order_id = f"cf_{uuid.uuid4().hex[:22]}"
+    payload = {
+        "order_id": order_id,
+        "order_currency": currency,
+        "order_amount": _amount_rupees(amount_paise),
+        "customer_details": {
+            "customer_id": user.user_id,
+            "customer_name": user.name or "DealsKB User",
+            "customer_email": user.email or "support@dealskb.com",
+            "customer_phone": _normalize_phone(user.mobile_number),
+        },
+        "order_note": f"DealsKB payment for {order_tags.get('plan_id') if order_tags else 'platform service'}",
+    }
+    if order_tags:
+        payload["order_tags"] = order_tags
+
+    print("Cashfree order create payload:", payload, flush=True)
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            f"{base_url}/orders",
+            json=payload,
+            headers=_cashfree_headers(),
+        )
+
+    print("Cashfree order create status:", response.status_code, flush=True)
+    print("Cashfree order create response:", response.text, flush=True)
+    if response.status_code >= 400:
+        raise HTTPException(status_code=400, detail=f"Cashfree order creation failed: {response.text}")
+
+    return response.json()
+
+
+async def fetch_cashfree_order(order_id: str) -> dict:
+    _require_cashfree_config()
+    _, _, _, base_url, _ = _cashfree_credentials()
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{base_url}/orders/{order_id}",
+            headers=_cashfree_headers(),
+        )
+
+    print("Cashfree get order status:", response.status_code, flush=True)
+    print("Cashfree get order response:", response.text, flush=True)
+    if response.status_code >= 400:
+        raise HTTPException(status_code=400, detail=f"Cashfree order verification failed: {response.text}")
+
+    return response.json()
+
+
+def _find_payment_by_any_order_id(db: Session, user_id: str, body: PaymentFailIn):
+    order_id = body.cashfree_order_id or body.order_id or body.razorpay_order_id
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+
+    payment = db.query(PaymentTransaction).filter(
+        PaymentTransaction.user_id == user_id,
+    ).filter(
+        (PaymentTransaction.cashfree_order_id == order_id) | (PaymentTransaction.razorpay_order_id == order_id)
+    ).first()
+    return order_id, payment
 
 
 @router.get("/config")
 def payment_config(user: User = Depends(auth_required)):
-    key_id, _, currency = _razorpay_credentials()
+    app_id, _, mode, _, _ = _cashfree_credentials()
     return {
-        "key_id": key_id,
-        "currency": currency,
+        "gateway": "cashfree",
+        "app_id": app_id,
+        "mode": mode,
+        "currency": "INR",
     }
 
 
@@ -76,9 +163,6 @@ async def create_payment_order(
     user: User = Depends(auth_required),
     db: Session = Depends(get_db),
 ):
-    _require_razorpay_config()
-    _log_razorpay_config()
-    key_id, key_secret, currency = _razorpay_credentials()
     if user.role not in ("Buyer", "Seller", "Dealer"):
         raise HTTPException(status_code=403, detail="Payments are available only for buyer, seller, or dealer accounts")
     if user.is_blocked:
@@ -91,70 +175,56 @@ async def create_payment_order(
         raise HTTPException(status_code=403, detail="This payment plan is not available for your role")
 
     receipt = f"rcpt_{uuid.uuid4().hex[:28]}"
-    payload = {
-        "amount": 100,  # Hardcoded 1 Rupee (100 paise) for testing/override
-        "currency": plan.get("currency") or currency,
-        "receipt": receipt,
-        "payment_capture": 1,
-        "notes": {
+    order = await create_cashfree_order(
+        amount_paise=plan["amount"],
+        currency=plan.get("currency") or "INR",
+        user=user,
+        order_tags={
             "user_id": user.user_id,
             "role": user.role,
             "plan_id": plan["plan_id"],
         },
-    }
-    print("Razorpay order create payload:", payload, flush=True)
+    )
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(
-            "https://api.razorpay.com/v1/orders",
-            json=payload,
-            auth=(key_id, key_secret),
-        )
-
-    print("Razorpay order create status:", response.status_code, flush=True)
-    print("Razorpay order create response:", response.text, flush=True)
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Razorpay order creation failed: {response.text}",
-        )
-
-    order = response.json()
     payment = PaymentTransaction(
         payment_id=f"paytxn_{uuid.uuid4().hex[:12]}",
         user_id=user.user_id,
         user_role=user.role,
         plan_id=plan["plan_id"],
         plan_name=plan["name"],
-        amount=100,  # Hardcoded 1 Rupee (100 paise) in database
-        currency=payload["currency"],
-        razorpay_order_id=order["id"],
+        amount=plan["amount"],
+        currency=order.get("order_currency") or plan.get("currency") or "INR",
+        payment_gateway="cashfree",
+        cashfree_order_id=order["order_id"],
+        cashfree_payment_session_id=order.get("payment_session_id"),
+        cashfree_order_status=order.get("order_status"),
         status="created",
         receipt=receipt,
-        notes=payload["notes"],
+        notes={
+            "plan_id": plan["plan_id"],
+            "product_type": plan.get("product_type"),
+            "product_types": plan.get("product_types"),
+        },
     )
     db.add(payment)
     db.commit()
     db.refresh(payment)
+
     print(
         "DB payment created:",
-        {"payment_id": payment.payment_id, "razorpay_order_id": payment.razorpay_order_id, "status": payment.status},
+        {"payment_id": payment.payment_id, "cashfree_order_id": payment.cashfree_order_id, "status": payment.status},
         flush=True,
     )
 
     return {
-        "key_id": key_id,
-        "order_id": order["id"],
-        "amount": order["amount"],
-        "currency": order["currency"],
-        "receipt": receipt,
-        "order": order,
+        "gateway": "cashfree",
+        "cashfree_mode": CASHFREE_ENV,
+        "order_id": order["order_id"],
+        "payment_session_id": order.get("payment_session_id"),
+        "amount": payment.amount,
+        "currency": payment.currency,
+        "order_status": order.get("order_status"),
         "payment": serialize_payment(payment),
-        "prefill": {
-            "name": user.name or "",
-            "email": user.email,
-            "contact": user.mobile_number,
-        },
     }
 
 
@@ -168,23 +238,18 @@ async def create_plan_payment_order(
 
 
 @router.post("/verify")
-def verify_payment(
+async def verify_payment(
     body: PaymentVerifyIn,
     user: User = Depends(auth_required),
     db: Session = Depends(get_db),
 ):
-    _require_razorpay_config()
-    print(
-        "Razorpay verify request:",
-        {
-            "razorpay_order_id": body.razorpay_order_id,
-            "razorpay_payment_id": body.razorpay_payment_id,
-            "razorpay_signature": body.razorpay_signature,
-        },
-        flush=True,
-    )
+    cashfree_order_id = body.cashfree_order_id
+    if not cashfree_order_id:
+        raise HTTPException(status_code=400, detail="cashfree_order_id is required")
+
+    print("Cashfree verify request:", {"cashfree_order_id": cashfree_order_id}, flush=True)
     payment = db.query(PaymentTransaction).filter(
-        PaymentTransaction.razorpay_order_id == body.razorpay_order_id,
+        PaymentTransaction.cashfree_order_id == cashfree_order_id,
         PaymentTransaction.user_id == user.user_id,
     ).first()
     if not payment:
@@ -192,30 +257,18 @@ def verify_payment(
     if payment.status == "paid":
         return {"message": "Payment already verified", "payment": serialize_payment(payment)}
 
-    signature_match, generated_signature = _verify_signature(
-        body.razorpay_order_id,
-        body.razorpay_payment_id,
-        body.razorpay_signature,
-    )
-    print("Generated signature:", generated_signature, flush=True)
-    print("Received signature:", body.razorpay_signature, flush=True)
-    print("Signature match:", signature_match, flush=True)
-    if not signature_match:
-        payment.status = "failed"
-        payment.updated_at = now_utc().replace(tzinfo=None)
-        db.commit()
-        print(
-            "DB payment update result:",
-            {"payment_id": payment.payment_id, "status": payment.status},
-            flush=True,
-        )
-        raise HTTPException(status_code=400, detail="Payment signature verification failed")
+    order = await fetch_cashfree_order(cashfree_order_id)
+    payment.cashfree_order_status = order.get("order_status")
+    payment.updated_at = now_utc().replace(tzinfo=None)
 
-    payment.razorpay_payment_id = body.razorpay_payment_id
-    payment.razorpay_signature = body.razorpay_signature
+    print("Cashfree order status:", payment.cashfree_order_status, flush=True)
+
+    if not _is_cashfree_paid(order):
+        db.commit()
+        raise HTTPException(status_code=400, detail=f"Payment not completed. Current status: {payment.cashfree_order_status}")
+
     payment.status = "paid"
     payment.paid_at = now_utc().replace(tzinfo=None)
-    payment.updated_at = now_utc().replace(tzinfo=None)
     db.commit()
     db.refresh(payment)
     print(
@@ -227,12 +280,12 @@ def verify_payment(
 
 
 @router.post("/verify-plan-payment")
-def verify_plan_payment(
+async def verify_plan_payment(
     body: PaymentVerifyIn,
     user: User = Depends(auth_required),
     db: Session = Depends(get_db),
 ):
-    return verify_payment(body, user, db)
+    return await verify_payment(body, user, db)
 
 
 @router.post("/mark-failed")
@@ -241,20 +294,19 @@ def mark_payment_failed(
     user: User = Depends(auth_required),
     db: Session = Depends(get_db),
 ):
-    payment = db.query(PaymentTransaction).filter(
-        PaymentTransaction.razorpay_order_id == body.razorpay_order_id,
-        PaymentTransaction.user_id == user.user_id,
-    ).first()
+    order_id, payment = _find_payment_by_any_order_id(db, user.user_id, body)
     if not payment:
         raise HTTPException(status_code=404, detail="Payment order not found")
     if payment.status == "paid":
         return {"message": "Payment already paid", "payment": serialize_payment(payment)}
 
     payment.status = "failed"
+    payment.updated_at = now_utc().replace(tzinfo=None)
+    if payment.cashfree_order_id == order_id:
+        payment.cashfree_order_status = "FAILED"
     notes = payment.notes or {}
     notes["failure_reason"] = body.reason or "Payment cancelled or failed"
     payment.notes = notes
-    payment.updated_at = now_utc().replace(tzinfo=None)
     db.commit()
     db.refresh(payment)
     return {"message": "Payment marked as failed", "payment": serialize_payment(payment)}

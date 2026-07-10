@@ -24,6 +24,15 @@ RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_CURRENCY = os.environ.get("RAZORPAY_CURRENCY", "INR")
 
+CASHFREE_APP_ID = os.environ.get("CASHFREE_APP_ID", "")
+CASHFREE_SECRET_KEY = os.environ.get("CASHFREE_SECRET_KEY", "")
+CASHFREE_ENV = os.environ.get("CASHFREE_ENV", "sandbox").lower()
+CASHFREE_API_VERSION = os.environ.get("CASHFREE_API_VERSION", "2025-01-01")
+CASHFREE_BASE_URL = os.environ.get(
+    "CASHFREE_BASE_URL",
+    "https://sandbox.cashfree.com/pg" if CASHFREE_ENV != "production" else "https://api.cashfree.com/pg",
+)
+
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.hostinger.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
 SMTP_USE_SSL = os.environ.get("SMTP_USE_SSL", "true").lower() in ("1", "true", "yes")

@@ -159,11 +159,14 @@ class PaymentOrderCreate(BaseModel):
 
 
 class PaymentVerifyIn(BaseModel):
-    razorpay_order_id: str
-    razorpay_payment_id: str
-    razorpay_signature: str
+    cashfree_order_id: Optional[str] = None
+    razorpay_order_id: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
+    razorpay_signature: Optional[str] = None
 
 
 class PaymentFailIn(BaseModel):
-    razorpay_order_id: str
+    order_id: Optional[str] = None
+    cashfree_order_id: Optional[str] = None
+    razorpay_order_id: Optional[str] = None
     reason: Optional[str] = None

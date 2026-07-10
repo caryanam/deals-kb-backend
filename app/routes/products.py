@@ -1,10 +1,16 @@
+import base64
+import json
+import logging
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from starlette.datastructures import UploadFile
 
 from app.auth import auth_required, get_user_from_token, is_seller_like, role_required
+from app.config import CASHFREE_ENV
 from app.database import get_db
 from app.models import BidIn, ProductEditIn, ProductIn, ProductUpdate
 from app.models_sql import Bid, Product, User
@@ -21,16 +27,153 @@ from app.services.community_matching_service import match_community_requests_for
 from app.utils import now_utc
 
 router = APIRouter(prefix="/products", tags=["products"])
+logger = logging.getLogger("dealskb")
+
+MULTIPART_PHOTO_KEYS = ("photos", "photos[]", "images", "images[]")
+MULTIPART_VIDEO_KEYS = ("video", "video_file")
+MULTIPART_SCALAR_KEYS = {
+    "title",
+    "product_type",
+    "category",
+    "brand",
+    "model",
+    "condition",
+    "description",
+    "product_price",
+    "price",
+    "expected_price",
+    "expectedPrice",
+    "specifications",
+    "specs",
+    "documents",
+}
+MULTIPART_DOCUMENT_KEYS = {
+    "aadhaar_card",
+    "pan_card",
+    "rc_copy",
+    "insurance_copy",
+    "invoice_copy",
+    "bill_copy",
+}
+
+
+def parse_json_field(value, default):
+    if value is None or value == "":
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON field in multipart request") from exc
+
+
+async def upload_to_data_url(upload: UploadFile) -> str:
+    content = await upload.read()
+    if not content:
+        raise HTTPException(status_code=400, detail=f"Uploaded file '{upload.filename or 'unknown'}' is empty")
+    content_type = upload.content_type or "application/octet-stream"
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+async def parse_product_request(request: Request) -> ProductIn:
+    content_type = (request.headers.get("content-type") or "").lower()
+    content_length = request.headers.get("content-length", "-")
+    logger.info("create_product request content_type=%s content_length=%s", content_type, content_length)
+
+    if "multipart/form-data" not in content_type:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+        try:
+            return ProductIn.model_validate(payload)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    form = await request.form()
+
+    async def collect_uploads(keys: tuple[str, ...]) -> List[str]:
+        files: List[str] = []
+        for key in keys:
+            for item in form.getlist(key):
+                if isinstance(item, UploadFile) and item.filename:
+                    files.append(await upload_to_data_url(item))
+                elif isinstance(item, str) and item.strip():
+                    files.append(item.strip())
+        return files
+
+    photos = await collect_uploads(MULTIPART_PHOTO_KEYS)
+
+    video = None
+    for key in MULTIPART_VIDEO_KEYS:
+        value = form.get(key)
+        if isinstance(value, UploadFile) and value.filename:
+            video = await upload_to_data_url(value)
+            break
+        if isinstance(value, str) and value.strip():
+            video = value.strip()
+            break
+
+    specifications = parse_json_field(form.get("specifications") or form.get("specs"), {})
+    documents = parse_json_field(form.get("documents"), {})
+
+    file_debug = {"photos": len(photos), "video": bool(video), "documents": []}
+    for key, value in form.multi_items():
+        if key in MULTIPART_SCALAR_KEYS or key in MULTIPART_PHOTO_KEYS or key in MULTIPART_VIDEO_KEYS or key in MULTIPART_DOCUMENT_KEYS:
+            continue
+        if isinstance(value, UploadFile) and value.filename:
+            documents[key] = await upload_to_data_url(value)
+            file_debug["documents"].append(key)
+
+    for key in MULTIPART_DOCUMENT_KEYS:
+        value = form.get(key)
+        if isinstance(value, UploadFile) and value.filename:
+            documents[key] = await upload_to_data_url(value)
+            if key not in file_debug["documents"]:
+                file_debug["documents"].append(key)
+        elif isinstance(value, str) and value.strip():
+            documents[key] = value.strip()
+            if key not in file_debug["documents"]:
+                file_debug["documents"].append(key)
+
+    logger.info(
+        "create_product multipart received photos=%s video=%s document_keys=%s",
+        file_debug["photos"],
+        file_debug["video"],
+        ",".join(file_debug["documents"]) or "-",
+    )
+
+    payload = {
+        "title": (form.get("title") or "").strip(),
+        "product_type": (form.get("product_type") or form.get("category") or "").strip(),
+        "brand": (form.get("brand") or "").strip(),
+        "model": (form.get("model") or "").strip(),
+        "condition": (form.get("condition") or "").strip(),
+        "description": (form.get("description") or "").strip(),
+        "product_price": form.get("product_price") or form.get("price"),
+        "expected_price": form.get("expected_price") or form.get("expectedPrice"),
+        "photos": photos,
+        "video": video,
+        "specifications": specifications,
+        "documents": documents,
+    }
+    try:
+        return ProductIn.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 @router.post("")
-def create_product(
-    body: ProductIn,
+async def create_product(
+    request: Request,
     user: User = Depends(role_required(["Seller", "Dealer", "Admin"])),
     db: Session = Depends(get_db),
 ):
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Blocked users cannot create listings.")
+    body = await parse_product_request(request)
     validate_product_payload(body)
     product = Product(
         product_id=f"prod_{uuid.uuid4().hex[:12]}",
@@ -481,12 +624,10 @@ class RelistSubmitIn(BaseModel):
     video: Optional[str] = None
     specifications: dict
     documents: dict
-    razorpayOrderId: str
-    razorpayPaymentId: str
-    razorpaySignature: str
+    cashfreeOrderId: str
 
 class RelistFailIn(BaseModel):
-    razorpayOrderId: str
+    cashfreeOrderId: str
     reason: str
 
 
@@ -521,54 +662,37 @@ async def create_relist_order(
     if product.seller_id != user.user_id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
         
-    import httpx
-    from app.routes.payments import _razorpay_credentials, _require_razorpay_config
-    _require_razorpay_config()
-    key_id, key_secret, currency = _razorpay_credentials()
-    
+    from app.routes.payments import create_cashfree_order
+
     amount = 100
-    receipt = f"rcpt_relist_{uuid.uuid4().hex[:20]}"
-    payload = {
-        "amount": amount,
-        "currency": currency,
-        "receipt": receipt,
-        "payment_capture": 1,
-        "notes": {
+    order = await create_cashfree_order(
+        amount_paise=amount,
+        currency="INR",
+        user=user,
+        order_tags={
             "user_id": user.user_id,
             "product_id": product_id,
             "purpose": "relist",
         },
-    }
-    
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(
-            "https://api.razorpay.com/v1/orders",
-            json=payload,
-            auth=(key_id, key_secret),
-        )
-        
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Razorpay order creation failed: {response.text}",
-        )
-        
-    order = response.json()
-    
-    product.relist_payment_order_id = order["id"]
+    )
+
+    product.relist_payment_order_id = order["order_id"]
     product.relist_payment_status = "created"
     db.commit()
-    
+
     return {
-        "orderId": order["id"],
+        "gateway": "cashfree",
+        "cashfree_mode": CASHFREE_ENV,
+        "orderId": order["order_id"],
+        "paymentSessionId": order.get("payment_session_id"),
         "amount": amount,
-        "currency": currency,
-        "key_id": key_id
+        "currency": order.get("order_currency") or "INR",
+        "orderStatus": order.get("order_status"),
     }
 
 
 @router.post("/{product_id}/relist/submit")
-def submit_relist(
+async def submit_relist(
     product_id: str,
     body: RelistSubmitIn,
     user: User = Depends(auth_required),
@@ -580,20 +704,16 @@ def submit_relist(
     if product.seller_id != user.user_id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
         
-    from app.routes.payments import _verify_signature
+    from app.routes.payments import fetch_cashfree_order
     from app.models_sql import PaymentTransaction
-    
-    signature_match, _ = _verify_signature(
-        body.razorpayOrderId,
-        body.razorpayPaymentId,
-        body.razorpaySignature,
-    )
-    if not signature_match:
-        raise HTTPException(status_code=400, detail="Payment verification failed")
-        
+
+    order = await fetch_cashfree_order(body.cashfreeOrderId)
+    if str(order.get("order_status") or "").upper() != "PAID":
+        raise HTTPException(status_code=400, detail=f"Payment not completed. Current status: {order.get('order_status')}")
+
     product.relist_payment_status = "paid"
-    product.relist_payment_id = body.razorpayPaymentId
-    product.relist_payment_order_id = body.razorpayOrderId
+    product.relist_payment_id = body.cashfreeOrderId
+    product.relist_payment_order_id = body.cashfreeOrderId
     
     new_product = Product(
         product_id=f"prod_{uuid.uuid4().hex[:12]}",
@@ -627,9 +747,10 @@ def submit_relist(
         plan_name=f"Relist fee - {body.category}",
         amount=100,
         currency="INR",
-        razorpay_order_id=body.razorpayOrderId,
-        razorpay_payment_id=body.razorpayPaymentId,
-        razorpay_signature=body.razorpaySignature,
+        payment_gateway="cashfree",
+        cashfree_order_id=body.cashfreeOrderId,
+        cashfree_payment_session_id=order.get("payment_session_id"),
+        cashfree_order_status=order.get("order_status"),
         status="paid",
         receipt=f"rcpt_relist_{uuid.uuid4().hex[:20]}",
         notes={"old_product_id": product_id, "new_product_id": new_product.product_id}
@@ -676,6 +797,6 @@ def relist_payment_failed(
         raise HTTPException(status_code=403, detail="You do not own this listing")
         
     product.relist_payment_status = "failed"
-    product.relist_payment_order_id = body.razorpayOrderId
+    product.relist_payment_order_id = body.cashfreeOrderId
     db.commit()
     return {"message": "Relist payment failed status recorded"}
