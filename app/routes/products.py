@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import uuid
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
