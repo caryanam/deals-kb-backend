@@ -9,7 +9,7 @@ from starlette.datastructures import FormData
 from sqlalchemy.orm import Session
 
 from app.auth import auth_required, get_user_from_token, is_seller_like, role_required
-from app.config import UPLOAD_DIR
+from app.config import BACKEND_URL, UPLOAD_DIR
 from app.database import get_db
 from app.models import BidIn, ProductEditIn, ProductIn, ProductUpdate
 from app.models_sql import Bid, Product, User
@@ -34,7 +34,7 @@ def _store_upload(upload: UploadFile, request: Request) -> str:
     destination = UPLOAD_DIR / filename
     with destination.open("wb") as buffer:
         shutil.copyfileobj(upload.file, buffer)
-    return f"{str(request.base_url).rstrip('/')}/uploads/{filename}"
+    return f"{BACKEND_URL}/uploads/{filename}"
 
 
 def _parse_json_dict(value: Any, field_name: str) -> dict:

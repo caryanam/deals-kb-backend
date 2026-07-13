@@ -17,7 +17,8 @@ MAX_REQUEST_SIZE_BYTES = MAX_REQUEST_SIZE_MB * 1024 * 1024
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
-BACKEND_URL = os.environ.get("BACKEND_URL", "https://backend.dealskb.com" if APP_ENV == "production" else "http://localhost:8087")
+BACKEND_URL = os.environ.get("BACKEND_URL", "https://backend.dealskb.com" if APP_ENV == "production" else "http://localhost:8087").rstrip("/")
+API_BASE_URL = os.environ.get("API_BASE_URL", f"{BACKEND_URL}/api/").rstrip("/") + "/"
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@gmail.com")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
 ADMIN_MOBILE_NUMBER = os.environ.get("ADMIN_MOBILE_NUMBER", "9123456789")
