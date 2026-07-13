@@ -26,7 +26,12 @@ def update_profile(
 
     if body.email is not None:
         email = body.email.lower()
-        existing = db.query(User).filter(User.email == email, User.user_id != current_user.user_id).first()
+        existing = db.query(User).filter(
+            User.email == email,
+            User.user_id != current_user.user_id,
+            User.is_deleted.is_(False),
+            User.is_active.is_(True),
+        ).first()
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
         current_user.email = email

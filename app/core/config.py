@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from app.config import CORS_ORIGINS
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(ROOT_DIR / ".env", override=True)
@@ -15,14 +16,11 @@ class Settings:
         or str(int(os.getenv("JWT_EXPIRES_DAYS", "7")) * 24 * 60)
     )
 
-    DEFAULT_ALLOWED_ORIGINS = [
+    DEFAULT_ALLOWED_ORIGINS = CORS_ORIGINS if CORS_ORIGINS and CORS_ORIGINS != ["*"] else [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
-        "https://backend.dealskb.com",
-        "https://dealskb.com",
-        "https://www.dealskb.com",
     ]
 
     @property

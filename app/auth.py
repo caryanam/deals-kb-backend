@@ -26,6 +26,7 @@ def create_jwt(user_id: str, role: str, email: str | None = None) -> str:
         "sub": user_id,
         "email": email,
         "role": normalize_role(role),
+        "purpose": "access",
     }
     return create_access_token(
         data,
@@ -40,6 +41,9 @@ def get_user_from_token(token: str, db: Session) -> Optional[User]:
     user_id = None
     try:
         payload = verify_access_token(token)
+        purpose = payload.get("purpose")
+        if purpose and purpose != "access":
+            return None
         user_id = payload.get("sub")
     except HTTPException:
         session = db.query(UserSession).filter(UserSession.token == token).first()
@@ -53,7 +57,10 @@ def get_user_from_token(token: str, db: Session) -> Optional[User]:
 
     if not user_id:
         return None
-    return db.query(User).filter(User.user_id == user_id).first()
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user or getattr(user, "is_deleted", False) or getattr(user, "is_active", True) is False:
+        return None
+    return user
 
 
 def role_required(roles: List[str]):

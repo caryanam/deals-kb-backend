@@ -23,6 +23,9 @@ def get_current_user(
     user_id = None
     try:
         payload = verify_access_token(token)
+        purpose = payload.get("purpose")
+        if purpose and purpose != "access":
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
         user_id = payload.get("sub")
     except HTTPException:
         session = db.query(UserSession).filter(UserSession.token == token).first()
@@ -40,6 +43,8 @@ def get_current_user(
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if getattr(user, "is_deleted", False) or getattr(user, "is_active", True) is False:
+        raise HTTPException(status_code=403, detail="This account has been deleted or disabled.")
     return user
 
 

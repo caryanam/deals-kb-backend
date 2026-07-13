@@ -1,7 +1,8 @@
-from sqlalchemy import Boolean, Column, DateTime, DECIMAL, Enum, Integer, JSON, String, Text, func
-from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy import Boolean, Column, DateTime, DECIMAL, Enum, Integer, JSON, LargeBinary, String, Text, func
+from sqlalchemy.dialects.mysql import LONGBLOB, LONGTEXT
 
 from app.database import Base
+from app.utils import now_utc
 
 
 class User(Base):
@@ -16,8 +17,11 @@ class User(Base):
     mobile_number = Column(String(20), index=True)
     auth_provider = Column(String(50), default="email")
     is_blocked = Column(Boolean, default=False, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+    is_deleted = Column(Boolean, default=False, index=True)
     blocked_reason = Column(Text)
     blocked_at = Column(DateTime)
+    deleted_at = Column(DateTime)
     buyer_access_until = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
 
@@ -118,6 +122,21 @@ class Dealer(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class MediaAsset(Base):
+    __tablename__ = "media_assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    asset_id = Column(String(100), unique=True, nullable=False, index=True)
+    storage_key = Column(String(255), unique=True, nullable=True, index=True)
+    owner_user_id = Column(String(100), nullable=True, index=True)
+    owner_role = Column(String(50), nullable=True, index=True)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(255), nullable=False, default="application/octet-stream")
+    size_bytes = Column(Integer, nullable=False, default=0)
+    content = Column(LargeBinary().with_variant(LONGBLOB, "mysql"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -174,7 +193,7 @@ class Bid(Base):
     bidder_id = Column(String(100), nullable=False, index=True)
     bidder_name = Column(String(255), nullable=False)
     amount = Column(DECIMAL(12, 2), nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, default=lambda: now_utc().replace(tzinfo=None), server_default=func.now())
 
 
 class Notification(Base):

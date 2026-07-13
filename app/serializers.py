@@ -1,4 +1,5 @@
 from decimal import Decimal
+from urllib.parse import urlparse
 
 from app.utils import iso
 
@@ -33,8 +34,27 @@ from app.config import BACKEND_URL
 def format_file_url(url: str) -> str:
     if not url:
         return url
-    if url.startswith("/uploads/"):
-        return f"{BACKEND_URL.rstrip('/')}{url}"
+    normalized = str(url).strip()
+
+    # Ignore previously corrupted values that were saved as UploadFile(...) strings.
+    if normalized.startswith("UploadFile("):
+        return ""
+
+    if normalized.startswith("/uploads/"):
+        return f"{BACKEND_URL.rstrip('/')}{normalized}"
+
+    # If an absolute URL points to an uploads path, always rewrite it to the
+    # currently configured backend host so localhost/server switches keep working.
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        parsed = urlparse(normalized)
+        if parsed.path.startswith("/uploads/"):
+            return f"{BACKEND_URL.rstrip('/')}{parsed.path}"
+        return normalized
+
+    # Some older rows may contain only a bare filename. Serve it from /uploads.
+    if "/" not in normalized and "\\" not in normalized and "." in normalized:
+        return f"{BACKEND_URL.rstrip('/')}/uploads/{normalized}"
+
     return url
 
 def serialize_product(product) -> dict:

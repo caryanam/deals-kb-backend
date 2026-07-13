@@ -10,14 +10,12 @@ JWT_SECRET = os.environ.get("JWT_SECRET_KEY") or os.environ.get("JWT_SECRET", "c
 JWT_ALGO = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_DAYS = int(os.environ.get("JWT_EXPIRES_DAYS", "7"))
 AUCTION_DURATION_SECONDS = int(os.environ.get("AUCTION_DURATION_SECONDS", "120"))
-CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
+CORS_ORIGINS = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "*").split(",") if origin.strip()]
 MAX_REQUEST_SIZE_MB = int(os.environ.get("MAX_REQUEST_SIZE_MB", "100"))
 MAX_REQUEST_SIZE_BYTES = MAX_REQUEST_SIZE_MB * 1024 * 1024
 
-UPLOAD_DIR = ROOT_DIR / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
-BACKEND_URL = os.environ.get("BACKEND_URL", "https://backend.dealskb.com" if APP_ENV == "production" else "http://localhost:8087").rstrip("/")
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8087").rstrip("/")
 API_BASE_URL = os.environ.get("API_BASE_URL", f"{BACKEND_URL}/api/").rstrip("/") + "/"
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@gmail.com")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")

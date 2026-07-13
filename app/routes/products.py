@@ -1,19 +1,17 @@
 import json
-import shutil
 import uuid
-from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, UploadFile
-from starlette.datastructures import FormData
+from starlette.datastructures import FormData, UploadFile as StarletteUploadFile
 from sqlalchemy.orm import Session
 
 from app.auth import auth_required, get_user_from_token, is_seller_like, role_required
-from app.config import BACKEND_URL, UPLOAD_DIR
 from app.database import get_db
 from app.models import BidIn, ProductEditIn, ProductIn, ProductUpdate
 from app.models_sql import Bid, Product, User
 from app.serializers import serialize_bid, serialize_product
+from app.services.media_assets import store_upload_in_db
 from app.services.products import (
     broadcast_new_bid,
     maybe_end_auction,
@@ -26,15 +24,6 @@ from app.services.community_matching_service import match_community_requests_for
 from app.utils import now_utc
 
 router = APIRouter(prefix="/products", tags=["products"])
-
-
-def _store_upload(upload: UploadFile, request: Request) -> str:
-    suffix = Path(upload.filename or "").suffix[:10]
-    filename = f"{uuid.uuid4().hex}{suffix}"
-    destination = UPLOAD_DIR / filename
-    with destination.open("wb") as buffer:
-        shutil.copyfileobj(upload.file, buffer)
-    return f"{BACKEND_URL}/uploads/{filename}"
 
 
 def _parse_json_dict(value: Any, field_name: str) -> dict:
@@ -59,39 +48,39 @@ def _parse_float_value(value: Any, field_name: str) -> float:
         raise HTTPException(status_code=400, detail=f"Invalid value for {field_name}") from exc
 
 
-def _read_upload_list(form: FormData, key: str, request: Request) -> List[str]:
+def _read_upload_list(form: FormData, key: str, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> List[str]:
     items = form.getlist(key)
     urls: List[str] = []
     for item in items:
-        if isinstance(item, UploadFile):
+        if isinstance(item, (UploadFile, StarletteUploadFile)):
             if item.filename:
-                urls.append(_store_upload(item, request))
+                urls.append(store_upload_in_db(db, item, owner_user_id=owner_user_id, owner_role=owner_role))
         elif item:
             urls.append(str(item).strip())
     return urls
 
 
-def _read_optional_upload(form: FormData, key: str, request: Request) -> Optional[str]:
+def _read_optional_upload(form: FormData, key: str, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> Optional[str]:
     value = form.get(key)
-    if isinstance(value, UploadFile):
+    if isinstance(value, (UploadFile, StarletteUploadFile)):
         if value.filename:
-            return _store_upload(value, request)
+            return store_upload_in_db(db, value, owner_user_id=owner_user_id, owner_role=owner_role)
         return None
     if value:
         return str(value).strip()
     return None
 
 
-def _build_documents_from_form(form: FormData, request: Request) -> dict:
+def _build_documents_from_form(form: FormData, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> dict:
     documents = _parse_json_dict(form.get("documents"), "documents")
     for field_name in ("rc_copy", "insurance_copy", "aadhaar_card", "pan_card"):
-        file_url = _read_optional_upload(form, field_name, request)
+        file_url = _read_optional_upload(form, field_name, db, owner_user_id=owner_user_id, owner_role=owner_role)
         if file_url:
             documents[field_name] = file_url
     return documents
 
 
-async def _parse_product_create_request(request: Request) -> ProductIn:
+async def _parse_product_create_request(request: Request, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> ProductIn:
     content_type = request.headers.get("content-type", "").lower()
     if "multipart/form-data" not in content_type:
         return ProductIn(**(await request.json()))
@@ -106,14 +95,14 @@ async def _parse_product_create_request(request: Request) -> ProductIn:
         description=str(form.get("description") or "").strip(),
         product_price=_parse_float_value(form.get("product_price"), "product_price"),
         expected_price=_parse_float_value(form.get("expected_price"), "expected_price"),
-        photos=_read_upload_list(form, "photos", request),
-        video=_read_optional_upload(form, "video", request),
+        photos=_read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
+        video=_read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
         specifications=_parse_json_dict(form.get("specifications"), "specifications"),
-        documents=_build_documents_from_form(form, request),
+        documents=_build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
     )
 
 
-async def _parse_product_edit_request(request: Request) -> dict:
+async def _parse_product_edit_request(request: Request, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> dict:
     content_type = request.headers.get("content-type", "").lower()
     if "multipart/form-data" not in content_type:
         payload = ProductEditIn(**(await request.json()))
@@ -129,10 +118,10 @@ async def _parse_product_edit_request(request: Request) -> dict:
         "description": str(form.get("description") or "").strip(),
         "product_price": _parse_float_value(form.get("product_price"), "product_price"),
         "expected_price": _parse_float_value(form.get("expected_price"), "expected_price"),
-        "photos": _read_upload_list(form, "photos", request),
-        "video": _read_optional_upload(form, "video", request),
+        "photos": _read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
+        "video": _read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
         "specifications": _parse_json_dict(form.get("specifications"), "specifications"),
-        "documents": _build_documents_from_form(form, request),
+        "documents": _build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
     }
     return {key: value for key, value in payload.items() if value not in (None, "")}
 
@@ -145,7 +134,7 @@ async def create_product(
 ):
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Blocked users cannot create listings.")
-    body = await _parse_product_create_request(request)
+    body = await _parse_product_create_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
     validate_product_payload(body)
     product = Product(
         product_id=f"prod_{uuid.uuid4().hex[:12]}",
@@ -334,7 +323,7 @@ async def edit_product(
     if user.role != "Admin" and product.status not in ("pending", "rejected"):
         raise HTTPException(status_code=400, detail="Seller or dealer can edit only pending or rejected listings")
 
-    data = await _parse_product_edit_request(request)
+    data = await _parse_product_edit_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
     if "product_price" in data and data["product_price"] is not None and data["product_price"] <= 0:
         raise HTTPException(status_code=400, detail="product_price must be greater than 0")
     if "expected_price" in data and data["expected_price"] is not None and data["expected_price"] <= 0:
@@ -556,6 +545,7 @@ async def place_bid(
         bidder_id=user.user_id,
         bidder_name=user.name or "",
         amount=body.amount,
+        created_at=now_utc().replace(tzinfo=None),
     )
     db.add(bid)
     product.current_bid = body.amount
@@ -700,7 +690,7 @@ async def submit_relist(
     if product.seller_id != user.user_id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
         
-    body = await _parse_product_create_request(request)
+    body = await _parse_product_create_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
 
     # Temporary no-payment mode:
     # Commenting out relist payment verification and payment-transaction creation

@@ -12,7 +12,7 @@ from app.config import ADMIN_EMAIL, ADMIN_MOBILE_NUMBER, ADMIN_PASSWORD, MAX_REQ
 from app.database import Base, SessionLocal, engine, ensure_database_exists
 from app.middleware.cors import configure_cors
 from app.models_sql import User
-from app.routes import admin, auth, chat_requests, chats, community_requests, newsletter, notifications, payments, plans, products, reports, users, ws
+from app.routes import admin, auth, chat_requests, chats, community_requests, newsletter, notifications, payments, plans, products, reports, uploads, users, ws
 from app.services.users import sync_role_profile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -117,8 +117,11 @@ def startup():
                 "ALTER TABLE users MODIFY email VARCHAR(255) NULL",
                 "ALTER TABLE users MODIFY role ENUM('Buyer','Seller','Dealer','Admin') NOT NULL",
                 "ALTER TABLE users ADD COLUMN is_blocked BOOL DEFAULT FALSE",
+                "ALTER TABLE users ADD COLUMN is_active BOOL DEFAULT TRUE",
+                "ALTER TABLE users ADD COLUMN is_deleted BOOL DEFAULT FALSE",
                 "ALTER TABLE users ADD COLUMN blocked_reason TEXT NULL",
                 "ALTER TABLE users ADD COLUMN blocked_at DATETIME NULL",
+                "ALTER TABLE users ADD COLUMN deleted_at DATETIME NULL",
                 "ALTER TABLE users ADD COLUMN buyer_access_until DATETIME NULL",
                 "ALTER TABLE buyers MODIFY email VARCHAR(255) NULL",
                 "ALTER TABLE sellers MODIFY email VARCHAR(255) NULL",
@@ -136,6 +139,12 @@ def startup():
                 "ALTER TABLE payment_transactions ADD COLUMN cashfree_order_id VARCHAR(100) NULL",
                 "ALTER TABLE payment_transactions ADD COLUMN cashfree_payment_session_id TEXT NULL",
                 "ALTER TABLE payment_transactions ADD COLUMN cashfree_order_status VARCHAR(30) NULL",
+                "ALTER TABLE media_assets ADD COLUMN storage_key VARCHAR(255) NULL",
+                "ALTER TABLE media_assets ADD COLUMN owner_user_id VARCHAR(100) NULL",
+                "ALTER TABLE media_assets ADD COLUMN owner_role VARCHAR(50) NULL",
+                "ALTER TABLE media_assets ADD COLUMN filename VARCHAR(255) NOT NULL DEFAULT 'upload.bin'",
+                "ALTER TABLE media_assets ADD COLUMN content_type VARCHAR(255) NOT NULL DEFAULT 'application/octet-stream'",
+                "ALTER TABLE media_assets ADD COLUMN size_bytes INT NOT NULL DEFAULT 0",
             ]:
                 try:
                     connection.execute(text(ddl))
@@ -144,12 +153,17 @@ def startup():
             for ddl in [
                 "CREATE UNIQUE INDEX ix_chat_conversations_request_id ON chat_conversations (request_id)",
                 "CREATE UNIQUE INDEX ix_payment_transactions_cashfree_order_id ON payment_transactions (cashfree_order_id)",
+                "CREATE UNIQUE INDEX ix_media_assets_storage_key ON media_assets (storage_key)",
             ]:
                 try:
                     connection.execute(text(ddl))
                 except SQLAlchemyError:
                     pass
             connection.execute(text("ALTER TABLE products MODIFY video LONGTEXT NULL"))
+            try:
+                connection.execute(text("ALTER TABLE media_assets MODIFY content LONGBLOB NOT NULL"))
+            except SQLAlchemyError:
+                pass
             try:
                 connection.execute(text("ALTER TABLE products MODIFY status ENUM('pending','approved','rejected','live','ended','cancelled') DEFAULT 'pending'"))
             except SQLAlchemyError:
@@ -197,11 +211,7 @@ def startup():
     finally:
         db.close()
 
-
-from fastapi.staticfiles import StaticFiles
-from app.config import UPLOAD_DIR
-
 configure_cors(app)
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
+app.include_router(uploads.router)
 app.include_router(api)

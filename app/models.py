@@ -166,3 +166,13 @@ class PaymentFailIn(BaseModel):
     order_id: Optional[str] = None
     cashfree_order_id: Optional[str] = None
     reason: Optional[str] = None
+
+
+class DeleteAccountVerifyIn(BaseModel):
+    identifier: str
+    password: str
+
+
+class DeleteAccountConfirmIn(BaseModel):
+    confirmationToken: str
+    confirmation: str

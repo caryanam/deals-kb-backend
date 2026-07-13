@@ -7,23 +7,27 @@ from datetime import timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.auth import auth_required, create_jwt, pwd_context
 from app.config import APP_ENV
+from app.core.security import create_access_token, verify_access_token
 from app.database import get_db
 from app.models import (
     ForgotPasswordOtpIn,
     GoogleSessionIn,
     LoginIn,
+    DeleteAccountConfirmIn,
+    DeleteAccountVerifyIn,
     RegisterIn,
     RegistrationOtpIn,
     ResetPasswordIn,
     VerifyForgotPasswordOtpIn,
     VerifyRegistrationOtpIn,
 )
-from app.models_sql import MobileVerificationOTP, RegistrationOTP, User, UserSession
+from app.models_sql import Buyer, Dealer, MobileVerificationOTP, RegistrationOTP, Seller, User, UserSession
 from app.serializers import serialize_user
 from app.services.email import send_otp_email
 from app.services.notifications import notify_admins
@@ -33,12 +37,16 @@ from app.services.otp_cache import (
     get_registration_otp,
     set_registration_otp,
 )
-from app.services.users import sync_role_profile
+from app.services.users import next_role_user_id, sync_role_profile
 from app.utils import now_utc
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger("dealskb")
 REGISTRATION_ROLES = ("Buyer", "Seller", "Dealer")
+INVALID_DELETE_CREDENTIALS = {
+    "success": False,
+    "message": "Invalid email/mobile number or password.",
+}
 
 
 def new_password_matches_current(new_password: str, current_hash: str | None) -> bool:
@@ -86,9 +94,47 @@ def resolve_user_by_identifier(
 
     if not user:
         raise HTTPException(status_code=404, detail="Account does not exist.")
+    if getattr(user, "is_deleted", False) or getattr(user, "is_active", True) is False:
+        raise HTTPException(status_code=404, detail="Account does not exist.")
     if user.auth_provider != "email":
         raise HTTPException(status_code=400, detail="Password reset is available only for password accounts.")
     return user
+
+
+def create_deletion_confirmation_token(user: User) -> str:
+    return create_access_token(
+        {
+            "sub": user.user_id,
+            "email": user.email,
+            "role": user.role,
+            "purpose": "account_deletion",
+        },
+        expires_delta=timedelta(minutes=5),
+    )
+
+
+def delete_user_account(db: Session, user: User):
+    original_email = user.email
+    original_mobile = user.mobile_number
+
+    db.query(UserSession).filter(UserSession.user_id == user.user_id).delete(synchronize_session=False)
+    db.query(MobileVerificationOTP).filter(
+        or_(
+            MobileVerificationOTP.user_id == user.user_id,
+            MobileVerificationOTP.email == original_email,
+            MobileVerificationOTP.mobile_number == original_mobile,
+        )
+    ).delete(synchronize_session=False)
+    db.query(RegistrationOTP).filter(
+        or_(
+            RegistrationOTP.email == original_email,
+            RegistrationOTP.mobile_number == original_mobile,
+        )
+    ).delete(synchronize_session=False)
+    db.query(Buyer).filter(Buyer.user_id == user.user_id).delete(synchronize_session=False)
+    db.query(Seller).filter(Seller.user_id == user.user_id).delete(synchronize_session=False)
+    db.query(Dealer).filter(Dealer.user_id == user.user_id).delete(synchronize_session=False)
+    db.delete(user)
 
 
 def generate_otp() -> str:
@@ -105,7 +151,7 @@ def send_forgot_password_otp_email_background(email: str, otp: str):
 
 def create_user(db: Session, email: str | None, password_hash: str, name: str, role: str, mobile_number: str | None):
     user = User(
-        user_id=f"user_{uuid.uuid4().hex[:12]}",
+        user_id=next_role_user_id(db, role),
         email=email.lower() if email else None,
         name=name,
         role=role,
@@ -124,6 +170,10 @@ def create_user(db: Session, email: str | None, password_hash: str, name: str, r
     return user
 
 
+def active_user_query(db: Session):
+    return db.query(User).filter(User.is_deleted.is_(False), User.is_active.is_(True))
+
+
 @router.post("/register")
 def register(body: RegisterIn, db: Session = Depends(get_db)):
     raise HTTPException(status_code=400, detail="Use email OTP registration flow")
@@ -134,9 +184,9 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     mobile_number = normalize_mobile(body.mobile_number)
     validate_indian_mobile(mobile_number)
 
-    if body.email and db.query(User).filter(User.email == body.email.lower()).first():
+    if body.email and active_user_query(db).filter(User.email == body.email.lower()).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    if mobile_number and db.query(User).filter(User.mobile_number == mobile_number).first():
+    if mobile_number and active_user_query(db).filter(User.mobile_number == mobile_number).first():
         raise HTTPException(status_code=400, detail="Mobile number already registered")
 
     user = create_user(db, body.email, pwd_context.hash(body.password), body.name, body.role, mobile_number)
@@ -153,7 +203,7 @@ def send_registration_otp(body: RegistrationOtpIn, db: Session = Depends(get_db)
     email = body.email.lower() if body.email else None
     if not email:
         raise HTTPException(status_code=400, detail="Email is required to send OTP")
-    if email and db.query(User).filter(User.email == email).first():
+    if email and active_user_query(db).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
     now = now_utc().replace(tzinfo=None)
@@ -236,7 +286,7 @@ def check_registration_otp(body: VerifyRegistrationOtpIn, db: Session = Depends(
             )
     if not otp_record:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-    if db.query(User).filter(User.email == email).first():
+    if active_user_query(db).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     return {"message": "Email OTP verified successfully"}
 
@@ -281,9 +331,9 @@ def verify_registration_otp(body: VerifyRegistrationOtpIn, db: Session = Depends
             )
     if not otp_record:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-    if otp_record.email and db.query(User).filter(User.email == otp_record.email).first():
+    if otp_record.email and active_user_query(db).filter(User.email == otp_record.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    if mobile_number and db.query(User).filter(User.mobile_number == mobile_number).first():
+    if mobile_number and active_user_query(db).filter(User.mobile_number == mobile_number).first():
         raise HTTPException(status_code=400, detail="Mobile number already registered")
 
     user = create_user(
@@ -319,10 +369,86 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid email/mobile number or password")
     if not password or not pwd_context.verify(password, user.password_hash or ""):
         raise HTTPException(status_code=400, detail="Invalid email/mobile number or password")
+    if getattr(user, "is_deleted", False) or getattr(user, "is_active", True) is False:
+        raise HTTPException(status_code=403, detail="This account has been deleted or disabled.")
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Your account has been blocked. Please contact support.")
 
     return {"access_token": create_jwt(user.user_id, user.role, user.email), "token_type": "bearer", "user": serialize_user(user)}
+
+
+@router.post("/delete-account/verify")
+def verify_account_for_deletion(body: DeleteAccountVerifyIn, db: Session = Depends(get_db)):
+    identifier = (body.identifier or "").strip()
+    password = (body.password or "").strip()
+    if not identifier or not password:
+        return JSONResponse(status_code=401, content=INVALID_DELETE_CREDENTIALS)
+
+    if "@" in identifier:
+        user = db.query(User).filter(User.email == identifier.lower()).first()
+    else:
+        lookup_mobile = normalize_mobile(identifier)
+        user = db.query(User).filter(User.mobile_number == lookup_mobile).first()
+    if (
+        not user
+        or getattr(user, "is_deleted", False)
+        or getattr(user, "is_active", True) is False
+        or user.auth_provider != "email"
+        or not pwd_context.verify(password, user.password_hash or "")
+    ):
+        return JSONResponse(status_code=401, content=INVALID_DELETE_CREDENTIALS)
+
+    if user.role == "Admin":
+        return JSONResponse(status_code=403, content={"success": False, "message": "Admin accounts cannot be deleted."})
+
+    return {
+        "success": True,
+        "message": "Account verified. Please confirm account deletion.",
+        "confirmationToken": create_deletion_confirmation_token(user),
+        "expiresInSeconds": 300,
+    }
+
+
+@router.delete("/delete-account/confirm")
+def confirm_account_deletion(body: DeleteAccountConfirmIn, db: Session = Depends(get_db)):
+    if body.confirmation != "DELETE":
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Account deletion confirmation has expired. Please verify again."},
+        )
+
+    try:
+        payload = verify_access_token((body.confirmationToken or "").strip())
+    except HTTPException:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Account deletion confirmation has expired. Please verify again."},
+        )
+
+    if payload.get("purpose") != "account_deletion":
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Account deletion confirmation has expired. Please verify again."},
+        )
+
+    user_id = payload.get("sub")
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user or getattr(user, "is_deleted", False):
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "message": "Account does not exist or has already been deleted."},
+        )
+    if user.role == "Admin":
+        return JSONResponse(status_code=403, content={"success": False, "message": "Admin accounts cannot be deleted."})
+
+    try:
+        delete_user_account(db, user)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {"success": True, "message": "Your account has been deleted successfully."}
 
 
 @router.post("/forgot-password/send-otp")
@@ -440,7 +566,7 @@ async def google_session(body: GoogleSessionIn, db: Session = Depends(get_db)):
     if not user:
         role = body.role if body.role in REGISTRATION_ROLES else "Buyer"
         user = User(
-            user_id=f"user_{uuid.uuid4().hex[:12]}",
+            user_id=next_role_user_id(db, role),
             email=email,
             name=name,
             role=role,
