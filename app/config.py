@@ -16,7 +16,7 @@ MAX_REQUEST_SIZE_BYTES = MAX_REQUEST_SIZE_MB * 1024 * 1024
 
 PORT = os.environ.get("PORT", "8000")
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
-BACKEND_URL = os.environ.get("BACKEND_URL", f"http://localhost:{PORT}").rstrip("/")
+BACKEND_URL = os.environ.get("BACKEND_URL")
 API_BASE_URL = os.environ.get("API_BASE_URL", f"{BACKEND_URL}/api/").rstrip("/") + "/"
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@gmail.com")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
