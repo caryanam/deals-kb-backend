@@ -56,7 +56,7 @@ def send_newsletter_subscription_email(to_email: str) -> None:
         "Sample alert format:\n"
         "- New live auctions near you\n"
         "- Cars, Bikes, Mobiles and Laptops going live this week\n"
-        "- Secure bidding pass reminders\n"
+        "- Auction timing reminders\n"
         "- Featured verified listings\n\n"
         "We will notify you when new auction deals are available.\n\n"
         "Regards,\n"

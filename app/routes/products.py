@@ -40,6 +40,63 @@ def _parse_json_dict(value: Any, field_name: str) -> dict:
     raise HTTPException(status_code=400, detail=f"Invalid value for {field_name}")
 
 
+PRODUCT_CORE_FIELDS = {
+    "title",
+    "product_type",
+    "category",
+    "brand",
+    "model",
+    "condition",
+    "description",
+    "product_price",
+    "expected_price",
+    "photos",
+    "video",
+    "specifications",
+    "documents",
+    "rc_copy",
+    "insurance_copy",
+    "aadhaar_card",
+    "pan_card",
+}
+
+
+def _build_specifications_from_form(form: FormData) -> dict:
+    specifications = _parse_json_dict(form.get("specifications"), "specifications")
+    for key, value in form.multi_items():
+        if key in PRODUCT_CORE_FIELDS:
+            continue
+        if isinstance(value, (UploadFile, StarletteUploadFile)):
+            continue
+        normalized = str(value or "").strip()
+        if not normalized:
+            continue
+        specifications[key] = normalized
+    return specifications
+
+
+def _build_product_payload_from_json(data: dict) -> dict:
+    payload = dict(data)
+    if not payload.get("product_type") and payload.get("category"):
+        payload["product_type"] = payload.get("category")
+
+    specifications = payload.get("specifications")
+    if not isinstance(specifications, dict):
+        specifications = {}
+
+    for key, value in list(payload.items()):
+        if key in PRODUCT_CORE_FIELDS:
+            continue
+        if value in (None, ""):
+            continue
+        specifications[key] = value
+
+    payload["specifications"] = specifications
+    payload["documents"] = payload.get("documents") or {}
+    payload["photos"] = payload.get("photos") or []
+    return payload
+
+
 def _parse_float_value(value: Any, field_name: str) -> float:
     try:
         return float(value)
@@ -82,7 +139,7 @@ def _build_documents_from_form(form: FormData, db: Session, owner_user_id: str |
 async def _parse_product_create_request(request: Request, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> ProductIn:
     content_type = request.headers.get("content-type", "").lower()
     if "multipart/form-data" not in content_type:
-        return ProductIn(**(await request.json()))
+        return ProductIn(**_build_product_payload_from_json(await request.json()))
 
     form = await request.form()
     return ProductIn(
@@ -96,7 +153,7 @@ async def _parse_product_create_request(request: Request, db: Session, owner_use
         expected_price=_parse_float_value(form.get("expected_price"), "expected_price"),
         photos=_read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
         video=_read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
-        specifications=_parse_json_dict(form.get("specifications"), "specifications"),
+        specifications=_build_specifications_from_form(form),
         documents=_build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
     )
 
@@ -104,7 +161,7 @@ async def _parse_product_create_request(request: Request, db: Session, owner_use
 async def _parse_product_edit_request(request: Request, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> dict:
     content_type = request.headers.get("content-type", "").lower()
     if "multipart/form-data" not in content_type:
-        payload = ProductEditIn(**(await request.json()))
+        payload = ProductEditIn(**_build_product_payload_from_json(await request.json()))
         return payload.model_dump(exclude_unset=True)
 
     form = await request.form()
@@ -119,7 +176,7 @@ async def _parse_product_edit_request(request: Request, db: Session, owner_user_
         "expected_price": _parse_float_value(form.get("expected_price"), "expected_price"),
         "photos": _read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
         "video": _read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
-        "specifications": _parse_json_dict(form.get("specifications"), "specifications"),
+        "specifications": _build_specifications_from_form(form),
         "documents": _build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
     }
     return {key: value for key, value in payload.items() if value not in (None, "")}
@@ -564,23 +621,6 @@ def get_bids(product_id: str, db: Session = Depends(get_db)):
 
 from pydantic import BaseModel
 
-class RelistSubmitIn(BaseModel):
-    category: str
-    title: str
-    brand: str
-    model: str
-    condition: str
-    description: str
-    product_price: float
-    expected_price: float
-    photos: List[str]
-    video: Optional[str] = None
-    specifications: dict
-    documents: dict
-    razorpayOrderId: Optional[str] = None
-    razorpayPaymentId: Optional[str] = None
-    razorpaySignature: Optional[str] = None
-
 class RelistFailIn(BaseModel):
     razorpayOrderId: str
     reason: str
@@ -616,50 +656,14 @@ async def create_relist_order(
         raise HTTPException(status_code=404, detail="Listing not found")
     if product.seller_id != user.user_id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
-        
-    import httpx
-    from app.routes.payments import _razorpay_credentials, _require_razorpay_config
-    _require_razorpay_config()
-    key_id, key_secret, currency = _razorpay_credentials()
-    
-    amount = 100
-    receipt = f"rcpt_relist_{uuid.uuid4().hex[:20]}"
-    payload = {
-        "amount": amount,
-        "currency": currency,
-        "receipt": receipt,
-        "payment_capture": 1,
-        "notes": {
-            "user_id": user.user_id,
-            "product_id": product_id,
-            "purpose": "relist",
-        },
-    }
-    
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(
-            "https://api.razorpay.com/v1/orders",
-            json=payload,
-            auth=(key_id, key_secret),
-        )
-        
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Razorpay order creation failed: {response.text}",
-        )
-        
-    order = response.json()
-    
-    product.relist_payment_order_id = order["id"]
-    product.relist_payment_status = "created"
+
+    product.relist_payment_status = "bypassed"
     db.commit()
-    
+
     return {
-        "orderId": order["id"],
-        "amount": amount,
-        "currency": currency,
-        "key_id": key_id
+        "status": "bypassed",
+        "payment_required": False,
+        "message": "Relisting does not require payment right now.",
     }
 
 
@@ -678,24 +682,6 @@ async def submit_relist(
         
     body = await _parse_product_create_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
 
-    # Temporary no-payment mode:
-    # Commenting out relist payment verification and payment-transaction creation
-    # so sellers and dealers can relist directly without going through a gateway.
-    #
-    # from app.routes.payments import _verify_signature
-    # from app.models_sql import PaymentTransaction
-    #
-    # signature_match, _ = _verify_signature(
-    #     body.razorpayOrderId,
-    #     body.razorpayPaymentId,
-    #     body.razorpaySignature,
-    # )
-    # if not signature_match:
-    #     raise HTTPException(status_code=400, detail="Payment verification failed")
-    #
-    # product.relist_payment_status = "paid"
-    # product.relist_payment_id = body.razorpayPaymentId
-    # product.relist_payment_order_id = body.razorpayOrderId
     product.relist_payment_status = "bypassed"
     
     new_product = Product(
@@ -721,23 +707,6 @@ async def submit_relist(
         bid_count=0
     )
     db.add(new_product)
-    
-    # new_tx = PaymentTransaction(
-    #     payment_id=f"paytxn_{uuid.uuid4().hex[:12]}",
-    #     user_id=user.user_id,
-    #     user_role=user.role,
-    #     plan_id=f"relist_{body.product_type.lower()}",
-    #     plan_name=f"Relist fee - {body.product_type}",
-    #     amount=100,
-    #     currency="INR",
-    #     razorpay_order_id=body.razorpayOrderId,
-    #     razorpay_payment_id=body.razorpayPaymentId,
-    #     razorpay_signature=body.razorpaySignature,
-    #     status="paid",
-    #     receipt=f"rcpt_relist_{uuid.uuid4().hex[:20]}",
-    #     notes={"old_product_id": product_id, "new_product_id": new_product.product_id}
-    # )
-    # db.add(new_tx)
     
     create_notification(
         db,
@@ -777,8 +746,7 @@ def relist_payment_failed(
         raise HTTPException(status_code=404, detail="Listing not found")
     if product.seller_id != user.user_id:
         raise HTTPException(status_code=403, detail="You do not own this listing")
-        
-    product.relist_payment_status = "failed"
-    product.relist_payment_order_id = body.razorpayOrderId
+
+    product.relist_payment_status = "bypassed"
     db.commit()
-    return {"message": "Relist payment failed status recorded"}
+    return {"message": "Relisting does not require payment right now."}
