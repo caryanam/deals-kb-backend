@@ -19,7 +19,6 @@ from app.services.products import (
     validate_product_payload,
 )
 from app.services.notifications import create_notification, notify_admins
-from app.services.payment_plans import BUYER_PASS_PLAN_BY_PRODUCT_TYPE, PAYMENT_PLANS, active_plan_until
 from app.services.community_matching_service import match_community_requests_for_product
 from app.utils import now_utc
 
@@ -516,20 +515,7 @@ async def place_bid(
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Blocked users cannot place bids.")
     if user.role == "Buyer":
-        # Temporary no-payment mode:
-        # Commenting out bidding-pass validation so buyers can place bids freely.
-        #
-        # required_plan_id = BUYER_PASS_PLAN_BY_PRODUCT_TYPE.get(product.product_type)
-        # if required_plan_id and not active_plan_until(db, user.user_id, required_plan_id):
-        #     plan = PAYMENT_PLANS[required_plan_id]
-        #     raise HTTPException(
-        #         status_code=402,
-        #         detail={
-        #             "message": "Please activate a bidding pass for this category.",
-        #             "required_plan": plan,
-        #             "product_type": product.product_type,
-        #         },
-        #     )
+        # Buyer bidding is currently open without any payment or pass validation.
         pass
 
     current_bid = float(product.current_bid or 0)
