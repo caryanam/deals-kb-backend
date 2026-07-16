@@ -73,7 +73,15 @@ def root():
 
 @api.get("/health")
 def health():
-    return {"status": "ok"}
+    from app.config import BACKEND_URL, PORT
+    import os
+    return {
+        "status": "ok",
+        "port": PORT,
+        "backend_url": BACKEND_URL,
+        "env_backend_url": os.environ.get("BACKEND_URL"),
+        "env_port": os.environ.get("PORT")
+    }
 
 
 api.include_router(auth.router)
