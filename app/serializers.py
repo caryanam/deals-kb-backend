@@ -29,33 +29,61 @@ def serialize_user(user) -> dict:
     }
 
 
-from app.config import BACKEND_URL
 
-def format_file_url(url: str) -> str:
-    if not url:
-        return url
-    normalized = str(url).strip()
+def _public_base_url() -> str:
+    """Always read BACKEND_URL fresh from config so the correct value is used
+    regardless of module import order or late .env loading."""
+    from app.config import BACKEND_URL  # noqa: PLC0415 – intentional lazy import
+    return BACKEND_URL.rstrip("/")
 
-    # Ignore previously corrupted values that were saved as UploadFile(...) strings.
+
+def build_public_media_url(path: str) -> str:
+    """Return a fully-qualified production-safe media URL.
+
+    Rules (in priority order):
+    1. Empty / None  → return as-is.
+    2. Corrupted UploadFile(...) string → return "".
+    3. Already starts with the correct public base → return unchanged.
+    4. Any http(s) URL whose path begins with /uploads/ → rewrite host to public base.
+    5. Starts with /uploads/ → prepend public base.
+    6. Bare filename (no slashes, has a dot) → prepend public base + /uploads/.
+    7. Anything else → return as-is.
+    """
+    if not path:
+        return path
+
+    normalized = str(path).strip()
+
     if normalized.startswith("UploadFile("):
         return ""
 
-    if normalized.startswith("/uploads/"):
-        return f"{BACKEND_URL.rstrip('/')}{normalized}"
+    base = _public_base_url()
 
-    # If an absolute URL points to an uploads path, always rewrite it to the
-    # currently configured backend host so localhost/server switches keep working.
+    # Already correct public URL – return unchanged.
+    if normalized.startswith(base):
+        return normalized
+
+    # Absolute URL (any host) pointing at an /uploads/ path → rewrite host.
     if normalized.startswith("http://") or normalized.startswith("https://"):
         parsed = urlparse(normalized)
         if parsed.path.startswith("/uploads/"):
-            return f"{BACKEND_URL.rstrip('/')}{parsed.path}"
+            return f"{base}{parsed.path}"
         return normalized
 
-    # Some older rows may contain only a bare filename. Serve it from /uploads.
-    if "/" not in normalized and "\\" not in normalized and "." in normalized:
-        return f"{BACKEND_URL.rstrip('/')}/uploads/{normalized}"
+    # Relative /uploads/... path → prepend public base.
+    if normalized.startswith("/uploads/"):
+        return f"{base}{normalized}"
 
-    return url
+    # Bare filename (e.g. "abc123.jpg") → serve from /uploads/.
+    if "/" not in normalized and "\\" not in normalized and "." in normalized:
+        return f"{base}/uploads/{normalized}"
+
+    return path
+
+
+# Alias kept for backwards compatibility with any call-sites that use the old name.
+format_file_url = build_public_media_url
+
 
 def serialize_product(product) -> dict:
     photos_raw = value(product, "photos", []) or []

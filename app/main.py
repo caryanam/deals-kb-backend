@@ -99,6 +99,81 @@ api.include_router(admin.router)
 api.include_router(ws.router)
 
 
+def _migrate_media_urls() -> None:
+    """Replace stale localhost origins in media URL columns with BACKEND_URL.
+
+    This runs once at startup. It is idempotent – rows that are already correct
+    are skipped. The function is intentionally broad so it self-heals whenever
+    the server is deployed to a new domain.
+    """
+    import json
+    import re
+    from app.config import BACKEND_URL
+    from app.models_sql import Product
+
+    target = BACKEND_URL.rstrip("/")
+    # Pattern that matches any http(s)://localhost:<port> origin.
+    localhost_re = re.compile(r"https?://localhost(?::\d+)?", re.IGNORECASE)
+
+    db = SessionLocal()
+    updated = 0
+    try:
+        products = db.query(Product).all()
+        for product in products:
+            changed = False
+
+            # ── photos (JSON list of strings) ────────────────────────────────
+            photos = product.photos
+            if isinstance(photos, list):
+                new_photos = []
+                for p in photos:
+                    if isinstance(p, str):
+                        new_p = localhost_re.sub(target, p)
+                        new_photos.append(new_p)
+                        if new_p != p:
+                            changed = True
+                    else:
+                        new_photos.append(p)
+                if changed:
+                    product.photos = new_photos
+
+            # ── video (Text field) ───────────────────────────────────────────
+            if product.video and isinstance(product.video, str):
+                new_video = localhost_re.sub(target, product.video)
+                if new_video != product.video:
+                    product.video = new_video
+                    changed = True
+
+            # ── documents (JSON dict of str → str) ──────────────────────────
+            docs = product.documents
+            if isinstance(docs, dict):
+                new_docs = {}
+                for k, v in docs.items():
+                    if isinstance(v, str):
+                        new_v = localhost_re.sub(target, v)
+                        new_docs[k] = new_v
+                        if new_v != v:
+                            changed = True
+                    else:
+                        new_docs[k] = v
+                if changed:
+                    product.documents = new_docs
+
+            if changed:
+                updated += 1
+
+        if updated:
+            db.commit()
+            logger.info("Media URL migration: updated %d product row(s) to use %s", updated, target)
+        else:
+            logger.info("Media URL migration: no stale localhost URLs found in products table.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Media URL migration skipped due to error: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def startup():
     ensure_database_exists()
@@ -218,6 +293,12 @@ def startup():
         db.commit()
     finally:
         db.close()
+
+    # ── Media URL migration ──────────────────────────────────────────────────
+    # Rewrite any stale localhost:<port> origins stored in the DB to the
+    # currently configured BACKEND_URL so all API responses return production-
+    # safe URLs even for older rows that were uploaded before the domain was set.
+    _migrate_media_urls()
 
 configure_cors(app)
 
