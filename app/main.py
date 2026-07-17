@@ -172,8 +172,6 @@ def _migrate_media_urls() -> None:
         db.rollback()
     finally:
         db.close()
-
-
 @app.on_event("startup")
 def startup():
     ensure_database_exists()

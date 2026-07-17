@@ -7,7 +7,6 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.models_sql import MediaAsset
 
-
 def store_upload_in_db(
     db: Session,
     upload: UploadFile | StarletteUploadFile,

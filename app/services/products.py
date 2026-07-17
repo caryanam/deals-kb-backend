@@ -64,6 +64,23 @@ def auction_time_left(product: Product) -> int:
     return max(0, int((product.auction_end - now_utc().replace(tzinfo=None)).total_seconds()))
 
 
+def auction_snapshot(product: Product) -> dict:
+    return {
+        "product_id": product.product_id,
+        "status": product.status,
+        "auction_start": iso(product.auction_start),
+        "auction_end": iso(product.auction_end),
+        "server_time": iso(now_utc().replace(tzinfo=None)),
+        "time_left": auction_time_left(product),
+        "current_bid": float(product.current_bid) if product.current_bid is not None else None,
+        "highest_bidder_id": product.highest_bidder_id,
+        "highest_bidder_name": product.highest_bidder_name,
+        "winner_id": product.winner_id,
+        "winner_name": product.winner_name,
+        "bid_count": product.bid_count or 0,
+    }
+
+
 def maybe_end_auction(db: Session, product_id: str):
     product = db.query(Product).filter(Product.product_id == product_id).first()
     if not product or product.status != "live":
@@ -102,14 +119,15 @@ def maybe_end_auction(db: Session, product_id: str):
     )
     notify_admins(db, "Auction ended", f"Auction ended for {product.title}.", "auction_ended", product_id)
     db.commit()
+    db.refresh(product)
 
-    return {
+    event = {
         "type": "auction_ended",
-        "product_id": product.product_id,
-        "winner_id": product.highest_bidder_id,
-        "winner_name": product.highest_bidder_name,
         "final_amount": float(product.current_bid) if product.current_bid is not None else None,
+        **auction_snapshot(product),
     }
+    event["time_left"] = 0
+    return event
 
 
 async def auction_timer(product_id: str, end_time: datetime):
@@ -118,6 +136,8 @@ async def auction_timer(product_id: str, end_time: datetime):
         await manager.broadcast(product_id, {
             "type": "timer_tick",
             "product_id": product_id,
+            "auction_end": iso(end_time),
+            "server_time": iso(now_utc().replace(tzinfo=None)),
             "time_left": time_left,
         })
         if time_left <= 0:
@@ -150,20 +170,13 @@ async def start_product_auction(db: Session, product: Product):
     asyncio.create_task(auction_timer(product.product_id, end_time))
     await manager.broadcast(product.product_id, {
         "type": "auction_started",
-        "product_id": product.product_id,
-        "auction_start": iso(start_time),
-        "auction_end": iso(end_time),
-        "time_left": AUCTION_DURATION_SECONDS,
+        **auction_snapshot(product),
     })
 
 
 async def broadcast_new_bid(product: Product, bid, user, amount: float):
     await manager.broadcast(product.product_id, {
         "type": "new_bid",
-        "product_id": product.product_id,
         "bid": serialize_bid(bid),
-        "current_bid": amount,
-        "highest_bidder_name": user.name or "",
-        "bid_count": product.bid_count or 0,
-        "time_left": auction_time_left(product),
+        **auction_snapshot(product),
     })

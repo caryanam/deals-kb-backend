@@ -5,7 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.database import SessionLocal
 from app.models_sql import Product
 from app.realtime import manager
-from app.services.products import auction_time_left
+from app.services.products import auction_snapshot
 
 logger = logging.getLogger("dealskb")
 router = APIRouter(tags=["websocket"])
@@ -21,12 +21,7 @@ async def ws_auction(websocket: WebSocket, product_id: str):
             if product:
                 await websocket.send_json({
                     "type": "state",
-                    "product_id": product.product_id,
-                    "status": product.status,
-                    "current_bid": float(product.current_bid) if product.current_bid is not None else None,
-                    "highest_bidder_name": product.highest_bidder_name,
-                    "time_left": auction_time_left(product),
-                    "bid_count": product.bid_count or 0,
+                    **auction_snapshot(product),
                 })
         finally:
             db.close()
