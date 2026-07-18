@@ -1,4 +1,5 @@
 import asyncio
+import math
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
@@ -34,10 +35,13 @@ def validate_product_payload(body: ProductIn):
     product_type = body.product_type.lower().strip()
     if product_type not in ALLOWED_PRODUCT_TYPES:
         raise HTTPException(status_code=400, detail="product_type must be car, bike, laptop, or mobile")
-    if body.product_price <= 0:
-        raise HTTPException(status_code=400, detail="product_price must be greater than 0")
-    if body.expected_price <= 0:
-        raise HTTPException(status_code=400, detail="expected_price must be greater than 0")
+        
+    if not body.description or len(body.description.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Description must be at least 10 characters long")
+        
+    if body.expected_price < 10:
+        raise HTTPException(status_code=400, detail="Expected price must be at least ₹10")
+        
     if len(body.photos) > 8:
         raise HTTPException(status_code=400, detail="Maximum 8 photos allowed")
     if not body.video:
@@ -56,6 +60,75 @@ def validate_product_payload(body: ProductIn):
             status_code=400,
             detail=f"Missing required documents for {product_type}: {', '.join(missing_docs)}",
         )
+
+    # 1. Kilometer Driven validation
+    km_driven = body.specifications.get("kmDriven")
+    if km_driven is not None and str(km_driven).strip() != "":
+        try:
+            km_val = float(km_driven)
+            if km_val < 0:
+                raise HTTPException(status_code=400, detail="Kilometer driven must be a positive number")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Kilometer driven must be a valid number")
+
+    # 2. Manufacturing Year validation
+    year_val = body.specifications.get("year")
+    if year_val is not None and str(year_val).strip() != "":
+        try:
+            year_int = int(year_val)
+            current_year = datetime.now().year
+            if year_int < 1900 or year_int > current_year:
+                raise HTTPException(status_code=400, detail=f"Manufacturing year must be between 1900 and {current_year}")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Manufacturing year must be a valid integer")
+
+    # 3. Storage validation (laptop / mobile)
+    storage_val = body.specifications.get("storage")
+    if storage_val is not None:
+        storage_str = str(storage_val).strip()
+        if storage_str:
+            if "." in storage_str:
+                raise HTTPException(status_code=400, detail="Storage must be a whole number (no decimals)")
+            cleaned_str = "".join(c for c in storage_str if c.isdigit())
+            if not cleaned_str:
+                raise HTTPException(status_code=400, detail="Storage must be a valid whole number")
+            storage_int = int(cleaned_str)
+            if storage_int < 10:
+                raise HTTPException(status_code=400, detail="Storage must be at least 10 GB")
+
+    # 4. IMEI validation (mobile)
+    if product_type == "mobile":
+        imei_val = body.specifications.get("imeiNumber")
+        if not imei_val or str(imei_val).strip() == "":
+            raise HTTPException(status_code=400, detail="IMEI number is required for mobiles")
+        imei_str = str(imei_val).strip()
+        if not imei_str.isdigit() or len(imei_str) != 15:
+            raise HTTPException(status_code=400, detail="IMEI number must be exactly 15 digits")
+
+    # 5. RAM validation (laptop / mobile)
+    ram_val = body.specifications.get("ram")
+    if ram_val is not None:
+        ram_str = str(ram_val).strip().upper().replace(" ", "")
+        if ram_str:
+            supported_rams = {"2GB", "3GB", "4GB", "6GB", "8GB", "12GB", "16GB", "32GB", "64GB"}
+            if ram_str not in supported_rams:
+                if ram_str + "GB" in supported_rams:
+                    ram_str = ram_str + "GB"
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"RAM value '{ram_val}' is not a supported option. Supported options: {', '.join(sorted(list(supported_rams)))}"
+                    )
+
+    # 6. Insurance Details validation when present
+    ins_val = body.specifications.get("insuranceStatus")
+    if ins_val is not None:
+        if str(ins_val).strip() == "":
+            raise HTTPException(status_code=400, detail="Insurance details cannot be empty when present")
+
+
+def starting_bid_floor(expected_price: float) -> float:
+    return float(math.ceil(float(expected_price) * 0.5))
 
 
 def auction_time_left(product: Product) -> int:

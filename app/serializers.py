@@ -103,7 +103,6 @@ def serialize_product(product) -> dict:
         "model": value(product, "model"),
         "condition": value(product, "product_condition", value(product, "condition")),
         "description": value(product, "description"),
-        "product_price": money(value(product, "product_price")),
         "expected_price": money(value(product, "expected_price")),
         "currency": "INR",
         "photos": photos,

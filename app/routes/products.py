@@ -15,6 +15,7 @@ from app.services.media_assets import store_upload_in_db
 from app.services.products import (
     broadcast_new_bid,
     maybe_end_auction,
+    starting_bid_floor,
     start_product_auction,
     validate_product_payload,
 )
@@ -23,6 +24,14 @@ from app.services.community_matching_service import match_community_requests_for
 from app.utils import now_utc
 
 router = APIRouter(prefix="/products", tags=["products"])
+
+
+BID_INCREMENTS = {
+    "mobile": 50,
+    "laptop": 100,
+    "bike": 500,
+    "car": 1000,
+}
 
 
 def _parse_json_dict(value: Any, field_name: str) -> dict:
@@ -48,7 +57,6 @@ PRODUCT_CORE_FIELDS = {
     "model",
     "condition",
     "description",
-    "product_price",
     "expected_price",
     "photos",
     "video",
@@ -104,6 +112,11 @@ def _parse_float_value(value: Any, field_name: str) -> float:
         raise HTTPException(status_code=400, detail=f"Invalid value for {field_name}") from exc
 
 
+def _get_bid_increment(product_type: str | None) -> int:
+    normalized = (product_type or "").strip().lower()
+    return BID_INCREMENTS.get(normalized, 100)
+
+
 def _read_upload_list(form: FormData, key: str, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> List[str]:
     items = form.getlist(key)
     urls: List[str] = []
@@ -149,7 +162,6 @@ async def _parse_product_create_request(request: Request, db: Session, owner_use
         model=str(form.get("model") or "").strip(),
         condition=str(form.get("condition") or "").strip(),
         description=str(form.get("description") or "").strip(),
-        product_price=_parse_float_value(form.get("product_price"), "product_price"),
         expected_price=_parse_float_value(form.get("expected_price"), "expected_price"),
         photos=_read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
         video=_read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
@@ -172,7 +184,6 @@ async def _parse_product_edit_request(request: Request, db: Session, owner_user_
         "model": str(form.get("model") or "").strip(),
         "condition": str(form.get("condition") or "").strip(),
         "description": str(form.get("description") or "").strip(),
-        "product_price": _parse_float_value(form.get("product_price"), "product_price"),
         "expected_price": _parse_float_value(form.get("expected_price"), "expected_price"),
         "photos": _read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
         "video": _read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
@@ -202,7 +213,7 @@ async def create_product(
         model=body.model,
         product_condition=body.condition,
         description=body.description,
-        product_price=body.product_price,
+        product_price=body.expected_price,
         expected_price=body.expected_price,
         photos=body.photos,
         video=body.video,
@@ -380,8 +391,6 @@ async def edit_product(
         raise HTTPException(status_code=400, detail="Seller or dealer can edit only pending or rejected listings")
 
     data = await _parse_product_edit_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
-    if "product_price" in data and data["product_price"] is not None and data["product_price"] <= 0:
-        raise HTTPException(status_code=400, detail="product_price must be greater than 0")
     if "expected_price" in data and data["expected_price"] is not None and data["expected_price"] <= 0:
         raise HTTPException(status_code=400, detail="expected_price must be greater than 0")
     if "photos" in data and data["photos"] is not None:
@@ -390,9 +399,11 @@ async def edit_product(
         if len(data["photos"]) > 8:
             raise HTTPException(status_code=400, detail="Maximum 8 photos allowed")
 
-    for field in ("title", "brand", "model", "description", "product_price", "expected_price", "photos", "video", "specifications", "documents"):
+    for field in ("title", "brand", "model", "description", "expected_price", "photos", "video", "specifications", "documents"):
         if field in data:
             setattr(product, field, data[field])
+    if "expected_price" in data and data["expected_price"] is not None:
+        product.product_price = data["expected_price"]
     if "condition" in data:
         product.product_condition = data["condition"]
     if "product_type" in data and data["product_type"] is not None:
@@ -406,7 +417,6 @@ async def edit_product(
         model=product.model,
         condition=product.product_condition,
         description=product.description or "",
-        product_price=float(product.product_price),
         expected_price=float(product.expected_price),
         photos=product.photos or [],
         video=product.video,
@@ -577,7 +587,8 @@ async def place_bid(
 
     current_bid = float(product.current_bid or 0)
     expected_price = float(product.expected_price)
-    min_bid = max(current_bid + 100, expected_price) if current_bid == 0 else current_bid + 100
+    bid_increment = _get_bid_increment(product.product_type)
+    min_bid = max(current_bid + bid_increment, starting_bid_floor(expected_price)) if current_bid == 0 else current_bid + bid_increment
     if body.amount < min_bid:
         raise HTTPException(status_code=400, detail=f"Bid must be at least INR {min_bid}")
 
@@ -683,30 +694,43 @@ async def submit_relist(
     body = await _parse_product_create_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
 
     product.relist_payment_status = "bypassed"
-    
-    new_product = Product(
-        product_id=f"prod_{uuid.uuid4().hex[:12]}",
-        seller_id=user.user_id,
-        seller_name=user.name or "",
-        title=body.title,
-        product_type=body.product_type.lower().strip(),
-        brand=body.brand,
-        model=body.model,
-        product_condition=body.condition,
-        description=body.description,
-        product_price=body.product_price,
-        expected_price=body.expected_price,
-        photos=body.photos,
-        video=body.video,
-        specifications=body.specifications,
-        documents=body.documents,
-        status="pending",
-        parent_product_id=product_id,
-        is_relisted=True,
-        relist_count=(product.relist_count or 0) + 1,
-        bid_count=0
-    )
-    db.add(new_product)
+
+    # Relisting should update the same listing record rather than creating a new one.
+    # Reset the previous auction state so the product goes back through admin approval cleanly.
+    product.seller_name = user.name or ""
+    product.title = body.title
+    product.product_type = body.product_type.lower().strip()
+    product.brand = body.brand
+    product.model = body.model
+    product.product_condition = body.condition
+    product.description = body.description
+    product.product_price = body.expected_price
+    product.expected_price = body.expected_price
+    product.photos = body.photos
+    product.video = body.video
+    product.specifications = body.specifications
+    product.documents = body.documents
+    product.status = "pending"
+    product.reject_reason = None
+    product.auction_start = None
+    product.auction_end = None
+    product.current_bid = None
+    product.highest_bidder_id = None
+    product.highest_bidder_name = None
+    product.bid_count = 0
+    product.winner_id = None
+    product.winner_name = None
+    product.is_cancelled = False
+    product.cancel_reason = None
+    product.cancelled_at = None
+    product.approved_at = None
+    product.rejected_at = None
+    product.submitted_at = now_utc().replace(tzinfo=None)
+    product.parent_product_id = product.parent_product_id or product.product_id
+    product.is_relisted = True
+    product.relist_count = (product.relist_count or 0) + 1
+
+    db.query(Bid).filter(Bid.product_id == product.product_id).delete(synchronize_session=False)
     
     create_notification(
         db,
@@ -714,22 +738,23 @@ async def submit_relist(
         title="Product Relisted",
         message=f"Your listing '{body.title}' has been relisted and submitted for verification.",
         notif_type="product_submitted",
-        product_id=new_product.product_id,
+        product_id=product.product_id,
     )
     notify_admins(
         db,
-        "New relisted product submitted",
-        f"{user.name} relisted '{body.title}'.",
+        "Relisted listing submitted",
+        f"{user.name} resubmitted '{body.title}' for approval.",
         "product_submitted",
-        new_product.product_id,
+        product.product_id,
     )
     
     db.commit()
-    db.refresh(new_product)
+    db.refresh(product)
     
     return {
         "message": "Relisted listing submitted for admin approval",
-        "newListingId": new_product.product_id,
+        "listingId": product.product_id,
+        "newListingId": product.product_id,
         "status": "pending"
     }
 

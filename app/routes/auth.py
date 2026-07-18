@@ -70,6 +70,34 @@ def normalize_mobile(mobile_number: str | None) -> str | None:
     return mobile_number.strip() if mobile_number else None
 
 
+def validate_full_name_backend(name: str | None) -> str | None:
+    if not name:
+        return "Full Name is required."
+    trimmed = name.strip()
+    if len(trimmed) < 2:
+        return "Full name must contain at least 2 characters."
+    
+    # Allow letters, spaces, apostrophes, hyphens, and periods.
+    # Reject digits-only or spaces-only names.
+    if not re.fullmatch(r"[a-zA-Z\s'\-\.]+", trimmed):
+        return "Full name must contain only letters, spaces, apostrophes, hyphens, or periods."
+    return None
+
+
+def validate_password_strength_backend(password: str | None) -> str | None:
+    if not password:
+        return "Password is required."
+    if len(password) < 8:
+        return "Password must be at least 8 characters long."
+    if " " in password:
+        return "Password must not contain spaces."
+    # Require at least one uppercase, lowercase, digit, and special char
+    pattern = r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#^()_\-+=])[^\s]{8,}$"
+    if not re.match(pattern, password):
+        return "Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character."
+    return None
+
+
 def validate_indian_mobile(mobile_number: str | None):
     if mobile_number and not re.fullmatch(r"[6-9]\d{9}", mobile_number):
         raise HTTPException(status_code=400, detail="mobile_number must be a valid 10-digit Indian mobile number")
@@ -200,6 +228,9 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
 def send_registration_otp(body: RegistrationOtpIn, db: Session = Depends(get_db)):
     if body.role not in REGISTRATION_ROLES:
         raise HTTPException(status_code=400, detail="Role must be Buyer, Seller, or Dealer")
+    name_error = validate_full_name_backend(body.name)
+    if name_error:
+        raise HTTPException(status_code=400, detail=name_error)
     email = body.email.lower() if body.email else None
     if not email:
         raise HTTPException(status_code=400, detail="Email is required to send OTP")
@@ -297,12 +328,18 @@ def verify_registration_otp(body: VerifyRegistrationOtpIn, db: Session = Depends
     email = body.email.lower() if body.email else None
     if not email:
         raise HTTPException(status_code=400, detail="Email is required to verify OTP")
-    if not body.name or not body.name.strip():
-        raise HTTPException(status_code=400, detail="Full Name is required")
+    
+    name_error = validate_full_name_backend(body.name)
+    if name_error:
+        raise HTTPException(status_code=400, detail=name_error)
+        
     if not body.role or body.role not in REGISTRATION_ROLES:
         raise HTTPException(status_code=400, detail="Role must be Buyer, Seller, or Dealer")
-    if not body.password or len(body.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+        
+    password_error = validate_password_strength_backend(body.password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
+        
     validate_indian_mobile(mobile_number)
     now = now_utc().replace(tzinfo=None)
     otp_record = get_registration_otp(
