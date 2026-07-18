@@ -155,6 +155,10 @@ async def _parse_product_create_request(request: Request, db: Session, owner_use
         return ProductIn(**_build_product_payload_from_json(await request.json()))
 
     form = await request.form()
+    expected = _parse_float_value(form.get("expected_price"), "expected_price")
+    prod_price_raw = form.get("product_price")
+    product_price = _parse_float_value(prod_price_raw, "product_price") if prod_price_raw else expected
+
     return ProductIn(
         title=str(form.get("title") or "").strip(),
         product_type=str(form.get("product_type") or form.get("category") or "").strip(),
@@ -162,7 +166,8 @@ async def _parse_product_create_request(request: Request, db: Session, owner_use
         model=str(form.get("model") or "").strip(),
         condition=str(form.get("condition") or "").strip(),
         description=str(form.get("description") or "").strip(),
-        expected_price=_parse_float_value(form.get("expected_price"), "expected_price"),
+        expected_price=expected,
+        product_price=product_price,
         photos=_read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
         video=_read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
         specifications=_build_specifications_from_form(form),
@@ -184,12 +189,15 @@ async def _parse_product_edit_request(request: Request, db: Session, owner_user_
         "model": str(form.get("model") or "").strip(),
         "condition": str(form.get("condition") or "").strip(),
         "description": str(form.get("description") or "").strip(),
-        "expected_price": _parse_float_value(form.get("expected_price"), "expected_price"),
         "photos": _read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
         "video": _read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
         "specifications": _build_specifications_from_form(form),
         "documents": _build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
     }
+    if form.get("expected_price") is not None:
+        payload["expected_price"] = _parse_float_value(form.get("expected_price"), "expected_price")
+    if form.get("product_price") is not None:
+        payload["product_price"] = _parse_float_value(form.get("product_price"), "product_price")
     return {key: value for key, value in payload.items() if value not in (None, "")}
 
 
@@ -213,7 +221,7 @@ async def create_product(
         model=body.model,
         product_condition=body.condition,
         description=body.description,
-        product_price=body.expected_price,
+        product_price=body.product_price if body.product_price is not None else body.expected_price,
         expected_price=body.expected_price,
         photos=body.photos,
         video=body.video,
@@ -403,7 +411,10 @@ async def edit_product(
         if field in data:
             setattr(product, field, data[field])
     if "expected_price" in data and data["expected_price"] is not None:
-        product.product_price = data["expected_price"]
+        if "product_price" not in data:
+            product.product_price = data["expected_price"]
+    if "product_price" in data and data["product_price"] is not None:
+        product.product_price = data["product_price"]
     if "condition" in data:
         product.product_condition = data["condition"]
     if "product_type" in data and data["product_type"] is not None:
@@ -418,6 +429,7 @@ async def edit_product(
         condition=product.product_condition,
         description=product.description or "",
         expected_price=float(product.expected_price),
+        product_price=float(product.product_price) if product.product_price is not None else float(product.expected_price),
         photos=product.photos or [],
         video=product.video,
         specifications=product.specifications or {},
@@ -704,7 +716,7 @@ async def submit_relist(
     product.model = body.model
     product.product_condition = body.condition
     product.description = body.description
-    product.product_price = body.expected_price
+    product.product_price = body.product_price if body.product_price is not None else body.expected_price
     product.expected_price = body.expected_price
     product.photos = body.photos
     product.video = body.video

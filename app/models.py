@@ -79,6 +79,7 @@ class ProductIn(BaseModel):
     condition: str
     description: str
     expected_price: float
+    product_price: Optional[float] = None
     photos: List[str] = Field(default_factory=list)
     video: Optional[str] = None
     specifications: Dict = Field(default_factory=dict)
@@ -98,6 +99,7 @@ class ProductEditIn(BaseModel):
     condition: Optional[str] = None
     description: Optional[str] = None
     expected_price: Optional[float] = None
+    product_price: Optional[float] = None
     photos: Optional[List[str]] = None
     video: Optional[str] = None
     specifications: Optional[Dict] = None

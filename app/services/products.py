@@ -41,7 +41,8 @@ def validate_product_payload(body: ProductIn):
         
     if body.expected_price < 10:
         raise HTTPException(status_code=400, detail="Expected price must be at least ₹10")
-        
+
+
     if len(body.photos) > 8:
         raise HTTPException(status_code=400, detail="Maximum 8 photos allowed")
     if not body.video:
@@ -99,11 +100,10 @@ def validate_product_payload(body: ProductIn):
     # 4. IMEI validation (mobile)
     if product_type == "mobile":
         imei_val = body.specifications.get("imeiNumber")
-        if not imei_val or str(imei_val).strip() == "":
-            raise HTTPException(status_code=400, detail="IMEI number is required for mobiles")
-        imei_str = str(imei_val).strip()
-        if not imei_str.isdigit() or len(imei_str) != 15:
-            raise HTTPException(status_code=400, detail="IMEI number must be exactly 15 digits")
+        if imei_val is not None and str(imei_val).strip() != "":
+            imei_str = str(imei_val).strip()
+            if not imei_str.isdigit() or len(imei_str) != 15:
+                raise HTTPException(status_code=400, detail="IMEI number must be exactly 15 digits")
 
     # 5. RAM validation (laptop / mobile)
     ram_val = body.specifications.get("ram")
@@ -120,11 +120,9 @@ def validate_product_payload(body: ProductIn):
                         detail=f"RAM value '{ram_val}' is not a supported option. Supported options: {', '.join(sorted(list(supported_rams)))}"
                     )
 
-    # 6. Insurance Details validation when present
-    ins_val = body.specifications.get("insuranceStatus")
-    if ins_val is not None:
-        if str(ins_val).strip() == "":
-            raise HTTPException(status_code=400, detail="Insurance details cannot be empty when present")
+    # 6. Insurance Details validation (optional when empty/present)
+    # Removed empty string validation for insuranceStatus to prevent submission failures when left empty.
+    pass
 
 
 def starting_bid_floor(expected_price: float) -> float:
