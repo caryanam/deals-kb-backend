@@ -66,7 +66,20 @@ PRODUCT_CORE_FIELDS = {
     "insurance_copy",
     "aadhaar_card",
     "pan_card",
+    "front_view_image",
+    "back_view_image",
+    "side_view_image",
 }
+
+DOCUMENT_UPLOAD_FIELDS = (
+    "rc_copy",
+    "insurance_copy",
+    "aadhaar_card",
+    "pan_card",
+    "front_view_image",
+    "back_view_image",
+    "side_view_image",
+)
 
 
 def _build_specifications_from_form(form: FormData) -> dict:
@@ -101,6 +114,9 @@ def _build_product_payload_from_json(data: dict) -> dict:
 
     payload["specifications"] = specifications
     payload["documents"] = payload.get("documents") or {}
+    for field_name in DOCUMENT_UPLOAD_FIELDS:
+        if payload.get(field_name):
+            payload["documents"][field_name] = payload[field_name]
     payload["photos"] = payload.get("photos") or []
     return payload
 
@@ -142,11 +158,39 @@ def _read_optional_upload(form: FormData, key: str, db: Session, owner_user_id: 
 
 def _build_documents_from_form(form: FormData, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> dict:
     documents = _parse_json_dict(form.get("documents"), "documents")
-    for field_name in ("rc_copy", "insurance_copy", "aadhaar_card", "pan_card"):
+    for field_name in DOCUMENT_UPLOAD_FIELDS:
         file_url = _read_optional_upload(form, field_name, db, owner_user_id=owner_user_id, owner_role=owner_role)
         if file_url:
             documents[field_name] = file_url
     return documents
+
+
+def _merge_existing_listing_files(existing_product: Product, body: ProductIn) -> ProductIn:
+    """Relist/edit submissions can omit files that are already present."""
+    existing_documents = existing_product.documents or {}
+    merged_documents = dict(existing_documents)
+    merged_documents.update(body.documents or {})
+
+    photos = body.photos or []
+    if not photos and existing_product.photos:
+        photos = list(existing_product.photos or [])
+
+    video = body.video or existing_product.video
+
+    return ProductIn(
+        title=body.title,
+        product_type=body.product_type,
+        brand=body.brand,
+        model=body.model,
+        condition=body.condition,
+        description=body.description,
+        expected_price=body.expected_price,
+        product_price=body.product_price,
+        photos=photos,
+        video=video,
+        specifications=body.specifications,
+        documents=merged_documents,
+    )
 
 
 async def _parse_product_create_request(request: Request, db: Session, owner_user_id: str | None = None, owner_role: str | None = None) -> ProductIn:
@@ -182,6 +226,10 @@ async def _parse_product_edit_request(request: Request, db: Session, owner_user_
         return payload.model_dump(exclude_unset=True)
 
     form = await request.form()
+    photos = _read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role)
+    video = _read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role)
+    documents = _build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role)
+    specifications = _build_specifications_from_form(form)
     payload = {
         "title": str(form.get("title") or "").strip(),
         "product_type": str(form.get("product_type") or form.get("category") or "").strip(),
@@ -189,11 +237,15 @@ async def _parse_product_edit_request(request: Request, db: Session, owner_user_
         "model": str(form.get("model") or "").strip(),
         "condition": str(form.get("condition") or "").strip(),
         "description": str(form.get("description") or "").strip(),
-        "photos": _read_upload_list(form, "photos", db, owner_user_id=owner_user_id, owner_role=owner_role),
-        "video": _read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
-        "specifications": _build_specifications_from_form(form),
-        "documents": _build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
     }
+    if specifications or form.get("specifications") is not None:
+        payload["specifications"] = specifications
+    if photos:
+        payload["photos"] = photos
+    if video:
+        payload["video"] = video
+    if documents or form.get("documents") is not None:
+        payload["documents"] = documents
     if form.get("expected_price") is not None:
         payload["expected_price"] = _parse_float_value(form.get("expected_price"), "expected_price")
     if form.get("product_price") is not None:
@@ -297,7 +349,8 @@ def list_products(
             maybe_end_auction(db, item.product_id)
 
     items = query.order_by(Product.created_at.desc()).limit(500).all()
-    return [serialize_product(item) for item in items]
+    include_private_documents = bool(is_admin or mine)
+    return [serialize_product(item, include_private_documents=include_private_documents) for item in items]
 
 
 @router.get("/public")
@@ -320,7 +373,7 @@ def list_public_products(
 
 
 def serialize_public_auction_product(product: Product) -> dict:
-    payload = serialize_product(product)
+    payload = serialize_product(product, include_private_documents=False)
     for field in ("seller_id", "expected_price", "documents", "highest_bidder_id", "winner_id"):
         payload.pop(field, None)
     return payload
@@ -368,7 +421,11 @@ def get_public_auction_bids(product_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{product_id}")
-def get_product(product_id: str, db: Session = Depends(get_db)):
+def get_product(
+    product_id: str,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
     product = db.query(Product).filter(Product.product_id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -377,7 +434,18 @@ def get_product(product_id: str, db: Session = Depends(get_db)):
         maybe_end_auction(db, product_id)
         db.refresh(product)
 
-    return serialize_product(product)
+    include_private_documents = False
+    if authorization and authorization.startswith("Bearer "):
+        current_user = get_user_from_token(authorization.replace("Bearer ", "").strip(), db)
+        include_private_documents = bool(
+            current_user
+            and (
+                current_user.role == "Admin"
+                or current_user.user_id == product.seller_id
+            )
+        )
+
+    return serialize_product(product, include_private_documents=include_private_documents)
 
 
 @router.patch("/{product_id}")
@@ -407,7 +475,12 @@ async def edit_product(
         if len(data["photos"]) > 8:
             raise HTTPException(status_code=400, detail="Maximum 8 photos allowed")
 
-    for field in ("title", "brand", "model", "description", "expected_price", "photos", "video", "specifications", "documents"):
+    if "documents" in data:
+        merged_documents = dict(product.documents or {})
+        merged_documents.update(data["documents"] or {})
+        product.documents = merged_documents
+
+    for field in ("title", "brand", "model", "description", "expected_price", "photos", "video", "specifications"):
         if field in data:
             setattr(product, field, data[field])
     if "expected_price" in data and data["expected_price"] is not None:
@@ -704,6 +777,8 @@ async def submit_relist(
         raise HTTPException(status_code=403, detail="You do not own this listing")
         
     body = await _parse_product_create_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
+    body = _merge_existing_listing_files(product, body)
+    validate_product_payload(body)
 
     product.relist_payment_status = "bypassed"
 

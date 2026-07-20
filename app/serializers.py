@@ -1,4 +1,5 @@
 from decimal import Decimal
+import hashlib
 from urllib.parse import urlparse
 
 from app.utils import iso
@@ -85,20 +86,98 @@ def build_public_media_url(path: str) -> str:
 format_file_url = build_public_media_url
 
 
-def serialize_product(product) -> dict:
+PRIVATE_PRODUCT_DOCUMENT_FIELDS = {"aadhaar_card", "pan_card"}
+PRODUCT_IMAGE_DOCUMENT_FIELDS = {"front_view_image", "back_view_image", "side_view_image"}
+VEHICLE_PRODUCT_TYPES = {"car", "bike"}
+_MEDIA_CONTENT_HASH_CACHE: dict[str, str | None] = {}
+
+
+def _vehicle_image_urls(documents: dict) -> dict:
+    return {
+        "front_view_image": documents.get("front_view_image"),
+        "back_view_image": documents.get("back_view_image"),
+        "side_view_image": documents.get("side_view_image"),
+    }
+
+
+def _media_ref(path: str | None) -> str | None:
+    if not path:
+        return None
+    normalized = str(path).strip()
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    media_path = parsed.path if parsed.scheme else normalized
+    if "/uploads/" not in media_path and not media_path.startswith("uploads/"):
+        return None
+    return media_path.replace("\\", "/").rstrip("/").split("/")[-1] or None
+
+
+def _media_content_hash(path: str | None) -> str | None:
+    ref = _media_ref(path)
+    if not ref:
+        return None
+    if ref in _MEDIA_CONTENT_HASH_CACHE:
+        return _MEDIA_CONTENT_HASH_CACHE[ref]
+
+    try:
+        from app.database import SessionLocal  # noqa: PLC0415
+        from app.models_sql import MediaAsset  # noqa: PLC0415
+
+        db = SessionLocal()
+        try:
+            asset = db.query(MediaAsset).filter(MediaAsset.asset_id == ref).first()
+            if not asset:
+                asset = db.query(MediaAsset).filter(MediaAsset.storage_key == ref).first()
+            if not asset:
+                asset = db.query(MediaAsset).filter(MediaAsset.filename == ref).first()
+            digest = hashlib.sha256(asset.content).hexdigest() if asset and asset.content is not None else None
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 - best-effort display cleanup only
+        digest = None
+
+    _MEDIA_CONTENT_HASH_CACHE[ref] = digest
+    return digest
+
+
+def serialize_product(product, include_private_documents: bool = True) -> dict:
     photos_raw = value(product, "photos", []) or []
     photos = [format_file_url(p) for p in photos_raw]
     video = format_file_url(value(product, "video"))
     
     docs_raw = value(product, "documents", {}) or {}
-    documents = {k: format_file_url(v) for k, v in docs_raw.items()}
+    documents = {
+        k: format_file_url(v)
+        for k, v in docs_raw.items()
+        if k not in PRODUCT_IMAGE_DOCUMENT_FIELDS
+        and (include_private_documents or k not in PRIVATE_PRODUCT_DOCUMENT_FIELDS)
+    }
+    vehicle_images = _vehicle_image_urls({k: format_file_url(v) for k, v in docs_raw.items()})
+    product_type = value(product, "product_type")
+    side_view_image = vehicle_images["side_view_image"]
+
+    if product_type in VEHICLE_PRODUCT_TYPES and side_view_image:
+        side_hash = _media_content_hash(side_view_image)
+        photos = [
+            side_view_image,
+            *[
+                photo
+                for photo in photos
+                if photo != side_view_image
+                and (not side_hash or _media_content_hash(photo) != side_hash)
+            ],
+        ]
+
+    photos = list(dict.fromkeys(photo for photo in photos if photo))
+    cover_image = side_view_image if product_type in VEHICLE_PRODUCT_TYPES and side_view_image else (photos[0] if photos else None)
 
     return {
         "product_id": value(product, "product_id"),
         "seller_id": value(product, "seller_id"),
         "seller_name": value(product, "seller_name", ""),
         "title": value(product, "title"),
-        "product_type": value(product, "product_type"),
+        "product_type": product_type,
         "brand": value(product, "brand"),
         "model": value(product, "model"),
         "condition": value(product, "product_condition", value(product, "condition")),
@@ -107,6 +186,10 @@ def serialize_product(product) -> dict:
         "product_price": money(value(product, "product_price")),
         "currency": "INR",
         "photos": photos,
+        "cover_image": cover_image,
+        "front_view_image": vehicle_images["front_view_image"],
+        "back_view_image": vehicle_images["back_view_image"],
+        "side_view_image": side_view_image,
         "video": video,
         "specifications": value(product, "specifications", {}) or {},
         "documents": documents,

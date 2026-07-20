@@ -64,4 +64,4 @@ def my_bids(user: User = Depends(auth_required), db: Session = Depends(get_db)):
 @router.get("/me/wins")
 def my_wins(user: User = Depends(auth_required), db: Session = Depends(get_db)):
     items = db.query(Product).filter(Product.winner_id == user.user_id).limit(200).all()
-    return [serialize_product(item) for item in items]
+    return [serialize_product(item, include_private_documents=False) for item in items]

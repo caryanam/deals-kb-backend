@@ -17,8 +17,8 @@ from app.utils import iso, now_utc
 ALLOWED_PRODUCT_TYPES = {"car", "bike", "laptop", "mobile"}
 
 REQUIRED_DOCUMENTS = {
-    "car": {"rc_copy", "insurance_copy"},
-    "bike": {"rc_copy", "insurance_copy"},
+    "car": {"rc_copy", "insurance_copy", "aadhaar_card", "pan_card", "front_view_image", "back_view_image", "side_view_image"},
+    "bike": {"rc_copy", "insurance_copy", "aadhaar_card", "pan_card", "front_view_image", "back_view_image", "side_view_image"},
     "laptop": {"aadhaar_card", "pan_card"},
     "mobile": {"aadhaar_card", "pan_card"},
 }
@@ -55,7 +55,12 @@ def validate_product_payload(body: ProductIn):
             detail=f"Missing required specifications for {product_type}: {', '.join(missing_specs)}",
         )
 
-    missing_docs = sorted(REQUIRED_DOCUMENTS[product_type] - set(body.documents.keys()))
+    present_docs = {
+        key
+        for key, value in (body.documents or {}).items()
+        if value is not None and str(value).strip()
+    }
+    missing_docs = sorted(REQUIRED_DOCUMENTS[product_type] - present_docs)
     if missing_docs:
         raise HTTPException(
             status_code=400,
