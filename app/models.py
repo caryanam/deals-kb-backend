@@ -159,13 +159,36 @@ class PaymentOrderCreate(BaseModel):
 
 
 class PaymentVerifyIn(BaseModel):
-    cashfree_order_id: Optional[str] = None
+    order_id: Optional[str] = None
 
 
 class PaymentFailIn(BaseModel):
     order_id: Optional[str] = None
-    cashfree_order_id: Optional[str] = None
     reason: Optional[str] = None
+
+
+class CCAvenuePaymentCreateIn(BaseModel):
+    payment_type: str
+    listing_id: Optional[str] = None
+    subscription_plan_id: Optional[str] = None
+    plan_id: Optional[str] = None
+
+
+class CCAvenuePaymentCreateOut(BaseModel):
+    order_id: str
+    gateway_url: str
+    enc_request: str
+    access_code: str
+
+
+class PaymentStatusOut(BaseModel):
+    order_id: str
+    status: str
+    amount: str
+    currency: str
+    payment_type: Optional[str] = None
+    tracking_id: Optional[str] = None
+    completed_at: Optional[str] = None
 
 
 class DeleteAccountVerifyIn(BaseModel):

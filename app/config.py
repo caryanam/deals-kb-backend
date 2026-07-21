@@ -23,14 +23,26 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin@123")
 ADMIN_MOBILE_NUMBER = os.environ.get("ADMIN_MOBILE_NUMBER", "9123456789")
 OLD_ADMIN_EMAIL = "admin@vehiclebid.com"
 
-CASHFREE_APP_ID = os.environ.get("CASHFREE_APP_ID", "")
-CASHFREE_SECRET_KEY = os.environ.get("CASHFREE_SECRET_KEY", "")
-CASHFREE_ENV = os.environ.get("CASHFREE_ENV", "sandbox").lower()
-CASHFREE_API_VERSION = os.environ.get("CASHFREE_API_VERSION", "2025-01-01")
-CASHFREE_BASE_URL = os.environ.get(
-    "CASHFREE_BASE_URL",
-    "https://sandbox.cashfree.com/pg" if CASHFREE_ENV != "production" else "https://api.cashfree.com/pg",
-)
+CCAVENUE_MERCHANT_ID = os.environ.get("CCAVENUE_MERCHANT_ID", "").strip()
+CCAVENUE_ACCESS_CODE = os.environ.get("CCAVENUE_ACCESS_CODE", "").strip()
+CCAVENUE_WORKING_KEY = os.environ.get("CCAVENUE_WORKING_KEY", "").strip()
+CCAVENUE_ENVIRONMENT = os.environ.get("CCAVENUE_ENVIRONMENT", "test").strip().lower()
+CCAVENUE_CURRENCY = os.environ.get("CCAVENUE_CURRENCY", "INR").strip().upper()
+CCAVENUE_LANGUAGE = os.environ.get("CCAVENUE_LANGUAGE", "EN").strip().upper()
+CCAVENUE_TEST_URL = os.environ.get("CCAVENUE_TEST_URL", "").strip() or "https://test.ccavenue.com/transaction/transaction.do?command=initiateTransaction"
+CCAVENUE_PRODUCTION_URL = os.environ.get("CCAVENUE_PRODUCTION_URL", "").strip() or "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction"
+CCAVENUE_REDIRECT_URL = os.environ.get(
+    "CCAVENUE_REDIRECT_URL",
+    f"{API_BASE_URL.rstrip('/')}/payments/ccavenue/callback",
+).strip()
+CCAVENUE_CANCEL_URL = os.environ.get(
+    "CCAVENUE_CANCEL_URL",
+    f"{API_BASE_URL.rstrip('/')}/payments/ccavenue/cancel",
+).strip()
+FRONTEND_PAYMENT_RESULT_URL = os.environ.get(
+    "FRONTEND_PAYMENT_RESULT_URL",
+    "https://dealskb.com/payment-result" if APP_ENV == "production" else "http://localhost:5173/payment-result",
+).strip()
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.hostinger.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))

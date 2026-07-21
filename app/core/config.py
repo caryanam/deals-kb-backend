@@ -31,5 +31,18 @@ class Settings:
         configured = [origin.strip() for origin in raw.split(",") if origin.strip()]
         return configured or self.DEFAULT_ALLOWED_ORIGINS
 
+    CCAVENUE_MERCHANT_ID: str = os.getenv("CCAVENUE_MERCHANT_ID", "").strip()
+    CCAVENUE_ACCESS_CODE: str = os.getenv("CCAVENUE_ACCESS_CODE", "").strip()
+    CCAVENUE_WORKING_KEY: str = os.getenv("CCAVENUE_WORKING_KEY", "").strip()
+    CCAVENUE_ENVIRONMENT: str = os.getenv("CCAVENUE_ENVIRONMENT", "test").strip().lower()
+    CCAVENUE_CURRENCY: str = os.getenv("CCAVENUE_CURRENCY", "INR").strip().upper()
+    CCAVENUE_LANGUAGE: str = os.getenv("CCAVENUE_LANGUAGE", "EN").strip().upper()
+    CCAVENUE_TEST_URL: str = os.getenv("CCAVENUE_TEST_URL", "").strip() or "https://test.ccavenue.com/transaction/transaction.do?command=initiateTransaction"
+    CCAVENUE_PRODUCTION_URL: str = os.getenv("CCAVENUE_PRODUCTION_URL", "").strip() or "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction"
+    FRONTEND_PAYMENT_RESULT_URL: str = os.getenv(
+        "FRONTEND_PAYMENT_RESULT_URL",
+        "https://dealskb.com/payment-result",
+    ).strip()
+
 
 settings = Settings()

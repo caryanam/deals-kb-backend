@@ -216,10 +216,22 @@ def startup():
                 "ALTER TABLE notifications ADD COLUMN read_at DATETIME NULL",
                 "ALTER TABLE notifications ADD COLUMN cleared_at DATETIME NULL",
                 "ALTER TABLE chat_conversations ADD COLUMN request_id VARCHAR(100) NULL",
-                "ALTER TABLE payment_transactions ADD COLUMN payment_gateway VARCHAR(30) DEFAULT 'cashfree'",
-                "ALTER TABLE payment_transactions ADD COLUMN cashfree_order_id VARCHAR(100) NULL",
-                "ALTER TABLE payment_transactions ADD COLUMN cashfree_payment_session_id TEXT NULL",
-                "ALTER TABLE payment_transactions ADD COLUMN cashfree_order_status VARCHAR(30) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN payment_gateway VARCHAR(30) DEFAULT 'ccavenue'",
+                "ALTER TABLE payment_transactions ADD COLUMN order_id VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN listing_id VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN subscription_plan_id VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN payment_type VARCHAR(50) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN gateway_tracking_id VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN bank_reference_number VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN order_status VARCHAR(50) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN payment_mode VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN failure_message TEXT NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN status_code VARCHAR(50) NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN status_message TEXT NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN raw_response_json JSON NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN initiated_at DATETIME NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN completed_at DATETIME NULL",
+                "ALTER TABLE payment_transactions ADD COLUMN activated_at DATETIME NULL",
                 "ALTER TABLE media_assets ADD COLUMN storage_key VARCHAR(255) NULL",
                 "ALTER TABLE media_assets ADD COLUMN owner_user_id VARCHAR(100) NULL",
                 "ALTER TABLE media_assets ADD COLUMN owner_role VARCHAR(50) NULL",
@@ -233,7 +245,10 @@ def startup():
                     pass
             for ddl in [
                 "CREATE UNIQUE INDEX ix_chat_conversations_request_id ON chat_conversations (request_id)",
-                "CREATE UNIQUE INDEX ix_payment_transactions_cashfree_order_id ON payment_transactions (cashfree_order_id)",
+                "CREATE UNIQUE INDEX ix_payment_transactions_order_id ON payment_transactions (order_id)",
+                "CREATE INDEX ix_payment_transactions_user_id ON payment_transactions (user_id)",
+                "CREATE INDEX ix_payment_transactions_gateway_tracking_id ON payment_transactions (gateway_tracking_id)",
+                "CREATE INDEX ix_payment_transactions_listing_id ON payment_transactions (listing_id)",
                 "CREATE UNIQUE INDEX ix_media_assets_storage_key ON media_assets (storage_key)",
             ]:
                 try:
@@ -249,6 +264,26 @@ def startup():
                 connection.execute(text("ALTER TABLE products MODIFY status ENUM('pending','approved','rejected','live','ended','cancelled') DEFAULT 'pending'"))
             except SQLAlchemyError:
                 pass
+            for ddl in [
+                "UPDATE payment_transactions SET status = 'PENDING' WHERE status = 'created'",
+                "UPDATE payment_transactions SET status = 'SUCCESS' WHERE status = 'paid'",
+                "UPDATE payment_transactions SET status = 'FAILED' WHERE status = 'failed'",
+            ]:
+                try:
+                    connection.execute(text(ddl))
+                except SQLAlchemyError:
+                    pass
+            for ddl in [
+                "ALTER TABLE payment_transactions MODIFY amount DECIMAL(12,2) NOT NULL",
+                "ALTER TABLE payment_transactions MODIFY plan_id VARCHAR(100) NULL",
+                "ALTER TABLE payment_transactions MODIFY plan_name VARCHAR(255) NULL",
+                "ALTER TABLE payment_transactions MODIFY payment_gateway VARCHAR(30) NOT NULL DEFAULT 'ccavenue'",
+                "ALTER TABLE payment_transactions MODIFY status ENUM('PENDING','SUCCESS','FAILED','ABORTED','INVALID','AWAITED') DEFAULT 'PENDING'",
+            ]:
+                try:
+                    connection.execute(text(ddl))
+                except SQLAlchemyError:
+                    pass
 
     db = SessionLocal()
     try:
