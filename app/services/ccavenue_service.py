@@ -123,14 +123,14 @@ def parse_decrypted_response(response: str) -> dict[str, str]:
 
 def map_order_status(order_status: str | None) -> str:
     normalized = (order_status or "").strip().lower()
-    if normalized == "success":
+    if "success" in normalized:
         return "SUCCESS"
-    if normalized == "failure":
+    if "fail" in normalized:
         return "FAILED"
-    if normalized == "aborted":
+    if "abort" in normalized:
         return "ABORTED"
-    if normalized == "invalid":
+    if "invalid" in normalized:
         return "INVALID"
-    if normalized == "awaited":
+    if "await" in normalized:
         return "AWAITED"
     return "INVALID"

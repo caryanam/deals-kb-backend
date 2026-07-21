@@ -201,13 +201,30 @@ def create_ccavenue_payment(
 
 
 def _process_ccavenue_response(db: Session, enc_resp: str | None, cancel: bool = False) -> tuple[str | None, str]:
+    import logging
+    logger = logging.getLogger("dealskb.payments")
+
     if not enc_resp:
+        logger.warning("[CCAvenue] Callback received with empty enc_resp")
         return None, "failed"
 
     decrypted = ccavenue_service.decrypt_response(enc_resp)
     response = ccavenue_service.parse_decrypted_response(decrypted)
     order_id = response.get("order_id")
+
+    logger.info("[CCAvenue] Callback response: order_id=%s order_status=%s failure_message=%s status_message=%s tracking_id=%s amount=%s currency=%s merchant_id=%s",
+        order_id,
+        response.get("order_status"),
+        response.get("failure_message"),
+        response.get("status_message"),
+        response.get("tracking_id"),
+        response.get("amount"),
+        response.get("currency"),
+        response.get("merchant_id"),
+    )
+
     if not order_id:
+        logger.warning("[CCAvenue] No order_id in decrypted response")
         return None, "failed"
 
     payment = (
@@ -217,20 +234,30 @@ def _process_ccavenue_response(db: Session, enc_resp: str | None, cancel: bool =
         .first()
     )
     if not payment:
+        logger.warning("[CCAvenue] No payment record found for order_id=%s", order_id)
         return order_id, "failed"
 
     mapped_status = "ABORTED" if cancel else ccavenue_service.map_order_status(response.get("order_status"))
     response_amount = _validated_decimal(response.get("amount"))
     stored_amount = Decimal(payment.amount).quantize(Decimal("0.01"))
     valid = True
-    if response.get("merchant_id") != CCAVENUE_MERCHANT_ID:
+
+    resp_merchant_id = response.get("merchant_id")
+    if resp_merchant_id and str(resp_merchant_id).strip() != str(CCAVENUE_MERCHANT_ID).strip():
+        logger.warning("[CCAvenue] Merchant ID mismatch: response=%r config=%r", resp_merchant_id, CCAVENUE_MERCHANT_ID)
         valid = False
     if response_amount is None or response_amount != stored_amount:
+        logger.warning("[CCAvenue] Amount mismatch: response=%s stored=%s", response_amount, stored_amount)
         valid = False
-    if response.get("currency") != payment.currency:
+    resp_currency = response.get("currency")
+    if resp_currency and resp_currency.strip().upper() != (payment.currency or "INR").strip().upper():
+        logger.warning("[CCAvenue] Currency mismatch: response=%s stored=%s", resp_currency, payment.currency)
         valid = False
     if not valid:
+        logger.warning("[CCAvenue] Validation failed for order_id=%s, overriding status to INVALID (was %s)", order_id, mapped_status)
         mapped_status = "INVALID"
+
+    logger.info("[CCAvenue] Final mapped_status=%s for order_id=%s (cancel=%s)", mapped_status, order_id, cancel)
 
     if payment.status == "SUCCESS" and mapped_status != "SUCCESS":
         return payment.order_id, "success"
