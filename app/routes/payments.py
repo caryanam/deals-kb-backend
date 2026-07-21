@@ -279,12 +279,10 @@ def ccavenue_cancel(encResp: str = Form(None), db: Session = Depends(get_db)):
 
 
 @router.get("/{order_id}/status")
-def payment_status(order_id: str, user: User = Depends(auth_required), db: Session = Depends(get_db)):
+def payment_status(order_id: str, db: Session = Depends(get_db)):
     payment = db.query(PaymentTransaction).filter(PaymentTransaction.order_id == order_id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
-    if user.role != "Admin" and payment.user_id != user.user_id:
-        raise HTTPException(status_code=403, detail="You cannot view this payment")
     return _payment_status_payload(payment)
 
 
