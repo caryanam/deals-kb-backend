@@ -84,6 +84,10 @@ class ProductIn(BaseModel):
     video: Optional[str] = None
     specifications: Dict = Field(default_factory=dict)
     documents: Dict = Field(default_factory=dict)
+    location_latitude: Optional[float] = None
+    location_longitude: Optional[float] = None
+    location_address: Optional[str] = None
+    location_full_address: Optional[str] = None
 
 
 class ProductUpdate(BaseModel):
@@ -104,6 +108,10 @@ class ProductEditIn(BaseModel):
     video: Optional[str] = None
     specifications: Optional[Dict] = None
     documents: Optional[Dict] = None
+    location_latitude: Optional[float] = None
+    location_longitude: Optional[float] = None
+    location_address: Optional[str] = None
+    location_full_address: Optional[str] = None
 
 
 class BidIn(BaseModel):

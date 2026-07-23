@@ -69,6 +69,10 @@ PRODUCT_CORE_FIELDS = {
     "front_view_image",
     "back_view_image",
     "side_view_image",
+    "location_latitude",
+    "location_longitude",
+    "location_address",
+    "location_full_address",
 }
 
 DOCUMENT_UPLOAD_FIELDS = (
@@ -216,6 +220,10 @@ async def _parse_product_create_request(request: Request, db: Session, owner_use
         video=_read_optional_upload(form, "video", db, owner_user_id=owner_user_id, owner_role=owner_role),
         specifications=_build_specifications_from_form(form),
         documents=_build_documents_from_form(form, db, owner_user_id=owner_user_id, owner_role=owner_role),
+        location_latitude=float(form.get("location_latitude")) if form.get("location_latitude") else None,
+        location_longitude=float(form.get("location_longitude")) if form.get("location_longitude") else None,
+        location_address=str(form.get("location_address") or "").strip() if form.get("location_address") else None,
+        location_full_address=str(form.get("location_full_address") or "").strip() if form.get("location_full_address") else None,
     )
 
 
@@ -238,6 +246,14 @@ async def _parse_product_edit_request(request: Request, db: Session, owner_user_
         "condition": str(form.get("condition") or "").strip(),
         "description": str(form.get("description") or "").strip(),
     }
+    if form.get("location_latitude") is not None:
+        payload["location_latitude"] = float(form.get("location_latitude"))
+    if form.get("location_longitude") is not None:
+        payload["location_longitude"] = float(form.get("location_longitude"))
+    if form.get("location_address") is not None:
+        payload["location_address"] = str(form.get("location_address") or "").strip()
+    if form.get("location_full_address") is not None:
+        payload["location_full_address"] = str(form.get("location_full_address") or "").strip()
     if specifications or form.get("specifications") is not None:
         payload["specifications"] = specifications
     if photos:
@@ -283,6 +299,17 @@ async def create_product(
         bid_count=0,
     )
     db.add(product)
+    if body.location_latitude is not None and body.location_longitude is not None:
+        from app.models_sql import ProductLocation
+        product_loc = ProductLocation(
+            location_id=f"loc_{uuid.uuid4().hex[:12]}",
+            product_id=product.product_id,
+            latitude=body.location_latitude,
+            longitude=body.location_longitude,
+            address=body.location_address or "",
+            full_address=body.location_full_address
+        )
+        db.add(product_loc)
     create_notification(
         db,
         user_id=user.user_id,
@@ -493,6 +520,10 @@ async def edit_product(
     if "product_type" in data and data["product_type"] is not None:
         product.product_type = data["product_type"].lower().strip()
 
+    # Fetch current location for validation if exists
+    from app.models_sql import ProductLocation
+    product_loc = db.query(ProductLocation).filter(ProductLocation.product_id == product.product_id).first()
+
     # Validate the complete product after applying edits.
     validate_product_payload(ProductIn(
         title=product.title,
@@ -507,12 +538,44 @@ async def edit_product(
         video=product.video,
         specifications=product.specifications or {},
         documents=product.documents or {},
+        location_latitude=float(product_loc.latitude) if product_loc else None,
+        location_longitude=float(product_loc.longitude) if product_loc else None,
+        location_address=product_loc.address if product_loc else None,
+        location_full_address=product_loc.full_address if product_loc else None,
     ))
 
     if product.status == "rejected" and user.role != "Admin":
         product.status = "pending"
         product.reject_reason = None
         product.rejected_at = None
+
+    location_fields = ("location_latitude", "location_longitude", "location_address", "location_full_address")
+    has_location_update = any(f in data for f in location_fields)
+    if has_location_update:
+        lat = data.get("location_latitude")
+        lng = data.get("location_longitude")
+        addr = data.get("location_address")
+        full_addr = data.get("location_full_address")
+        
+        if product_loc:
+            if lat is not None:
+                product_loc.latitude = lat
+            if lng is not None:
+                product_loc.longitude = lng
+            if addr is not None:
+                product_loc.address = addr
+            if full_addr is not None:
+                product_loc.full_address = full_addr
+        elif lat is not None and lng is not None:
+            product_loc = ProductLocation(
+                location_id=f"loc_{uuid.uuid4().hex[:12]}",
+                product_id=product.product_id,
+                latitude=lat,
+                longitude=lng,
+                address=addr or "",
+                full_address=full_addr
+            )
+            db.add(product_loc)
 
     product.updated_at = now_utc().replace(tzinfo=None)
     db.commit()

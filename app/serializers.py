@@ -142,6 +142,25 @@ def _media_content_hash(path: str | None) -> str | None:
 
 
 def serialize_product(product, include_private_documents: bool = True) -> dict:
+    location_data = None
+    try:
+        from app.database import SessionLocal
+        from app.models_sql import ProductLocation
+        db = SessionLocal()
+        try:
+            loc = db.query(ProductLocation).filter(ProductLocation.product_id == value(product, "product_id")).first()
+            if loc:
+                location_data = {
+                    "latitude": float(loc.latitude),
+                    "longitude": float(loc.longitude),
+                    "address": loc.address,
+                    "full_address": loc.full_address
+                }
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"Error fetching product location for serialization: {e}")
+
     photos_raw = value(product, "photos", []) or []
     photos = [format_file_url(p) for p in photos_raw]
     video = format_file_url(value(product, "video"))
@@ -219,6 +238,7 @@ def serialize_product(product, include_private_documents: bool = True) -> dict:
         "relist_payment_status": value(product, "relist_payment_status"),
         "relist_payment_order_id": value(product, "relist_payment_order_id"),
         "relist_payment_id": value(product, "relist_payment_id"),
+        "location": location_data,
     }
 
 

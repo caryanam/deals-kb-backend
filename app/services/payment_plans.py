@@ -5,14 +5,11 @@ from typing import Any
 
 
 SELLER_LISTING_FEES = {
-    "car": Decimal("1.00"),
-    "bike": Decimal("1.00"),
-    "mobile": Decimal("1.00"),
-    "laptop": Decimal("1.00"),
+    "mobile": Decimal("10.00"),
+    "laptop": Decimal("50.00"),
+    "bike": Decimal("100.00"),
+    "car": Decimal("500.00"),
 }
-
-BUYER_PASS_AMOUNT = Decimal("1.00")
-DEALER_PLAN_AMOUNT = Decimal("1.00")
 
 PAYMENT_PLANS: list[dict[str, Any]] = [
     {
@@ -21,7 +18,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "mobile",
-        "amount": BUYER_PASS_AMOUNT,
+        "amount": Decimal("21.00"),
         "duration_days": 1,
     },
     {
@@ -30,7 +27,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "laptop",
-        "amount": BUYER_PASS_AMOUNT,
+        "amount": Decimal("41.00"),
         "duration_days": 1,
     },
     {
@@ -39,7 +36,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "bike",
-        "amount": BUYER_PASS_AMOUNT,
+        "amount": Decimal("101.00"),
         "duration_days": 1,
     },
     {
@@ -48,16 +45,25 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "car",
-        "amount": BUYER_PASS_AMOUNT,
+        "amount": Decimal("211.00"),
         "duration_days": 1,
     },
     {
-        "plan_id": "dealer_monthly",
-        "plan_name": "Dealer Monthly Plan",
+        "plan_id": "dealer_mobile_monthly",
+        "plan_name": "Dealer Mobile Monthly Plan",
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
-        "product_type": "mobile,laptop,bike",
-        "amount": DEALER_PLAN_AMOUNT,
+        "product_type": "mobile",
+        "amount": Decimal("999.00"),
+        "duration_days": 30,
+    },
+    {
+        "plan_id": "dealer_laptop_bike_monthly",
+        "plan_name": "Dealer Laptop & Bike Monthly Plan",
+        "payment_type": "DEALER_PLAN",
+        "role": "Dealer",
+        "product_type": "laptop,bike",
+        "amount": Decimal("1999.00"),
         "duration_days": 30,
     },
     {
@@ -66,7 +72,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "car",
-        "amount": DEALER_PLAN_AMOUNT,
+        "amount": Decimal("2999.00"),
         "duration_days": 30,
     },
 ]

@@ -346,3 +346,17 @@ class PaymentTransaction(Base):
     created_at = Column(DateTime, server_default=func.now())
     paid_at = Column(DateTime)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ProductLocation(Base):
+    __tablename__ = "product_locations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    location_id = Column(String(100), unique=True, nullable=False, index=True)
+    product_id = Column(String(100), nullable=False, unique=True, index=True)
+    latitude = Column(DECIMAL(10, 6), nullable=False)
+    longitude = Column(DECIMAL(10, 6), nullable=False)
+    address = Column(String(255), nullable=False)
+    full_address = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
