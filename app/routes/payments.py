@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.auth import auth_required
+from app.auth import auth_required, role_required
 from app.config import CCAVENUE_ACCESS_CODE, CCAVENUE_CURRENCY, CCAVENUE_MERCHANT_ID, FRONTEND_PAYMENT_RESULT_URL
 from app.database import get_db
-from app.models import CCAvenuePaymentCreateIn, PaymentFailIn, PaymentOrderCreate, PaymentVerifyIn
+from app.models import CCAvenuePaymentCreateIn, PaymentFailIn, PaymentOrderCreate, PaymentVerifyIn, ManualPaymentCreateIn
 from app.models_sql import PaymentTransaction, Product, User
 from app.serializers import serialize_payment
 from app.services import ccavenue_service
@@ -395,3 +395,146 @@ def my_payments(user: User = Depends(auth_required), db: Session = Depends(get_d
         .all()
     )
     return [serialize_payment(payment) for payment in payments]
+
+
+@router.post("/manual/create")
+async def create_manual_payment(
+    body: ManualPaymentCreateIn,
+    user: User = Depends(auth_required),
+    db: Session = Depends(get_db)
+):
+    import uuid
+    payment_type = body.payment_type.strip().upper()
+    
+    # Reuse load payable item to resolve amount and details
+    amount, item = _load_payable_item(db, user, body)
+    plan = item.get("plan")
+    plan_id = body.plan_id or body.subscription_plan_id
+    if payment_type == "SELLER_LISTING":
+        plan_id = plan_id or "seller_listing"
+        
+    notes = {}
+    if plan:
+        notes = {
+            "plan": public_plan(plan),
+            "duration_days": plan.get("duration_days"),
+            "product_type": plan.get("product_type"),
+        }
+    else:
+        notes = {"product_type": getattr(item.get("product"), "product_type", None)}
+        
+    payment_id = f"upi_{uuid.uuid4().hex}"
+    
+    payment = PaymentTransaction(
+        payment_id=payment_id,
+        order_id=payment_id,
+        user_id=user.user_id,
+        user_role=user.role,
+        plan_id=plan_id,
+        plan_name=plan["plan_name"] if plan else payment_type,
+        subscription_plan_id=body.subscription_plan_id or body.plan_id,
+        listing_id=body.listing_id,
+        payment_type=payment_type,
+        amount=amount,
+        currency="INR",
+        payment_gateway="UPI",
+        status="PENDING",
+        order_status="PENDING",
+        receipt=payment_id,
+        initiated_at=now_utc().replace(tzinfo=None),
+        notes=notes,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    
+    from app.services.notifications import notify_admins
+    try:
+        notify_admins(
+            db,
+            "New UPI Payment Request",
+            f"User {user.name} submitted a payment request of INR {amount} for {payment.plan_name}.",
+            "payment_request",
+            payment.listing_id
+        )
+    except Exception as e:
+        print(f"Failed to notify admins: {e}")
+        
+    return {"payment_id": payment_id, "status": "PENDING"}
+
+
+@router.get("/admin/all")
+def get_all_manual_payments(
+    user: User = Depends(role_required(["Admin"])),
+    db: Session = Depends(get_db)
+):
+    # Fetch pending UPI transactions (Requests)
+    requests = (
+        db.query(PaymentTransaction)
+        .filter(PaymentTransaction.payment_gateway == "UPI", PaymentTransaction.status == "PENDING")
+        .order_by(PaymentTransaction.created_at.desc())
+        .all()
+    )
+    # Fetch all other transactions (History)
+    history = (
+        db.query(PaymentTransaction)
+        .filter(
+            ~((PaymentTransaction.payment_gateway == "UPI") & (PaymentTransaction.status == "PENDING"))
+        )
+        .order_by(PaymentTransaction.created_at.desc())
+        .all()
+    )
+    
+    def _enrich(payment):
+        data = serialize_payment(payment)
+        u = db.query(User).filter(User.user_id == payment.user_id).first()
+        data["user_name"] = u.name if u else "Unknown User"
+        data["user_email"] = u.email if u else ""
+        if payment.payment_type == "SELLER_LISTING" and payment.listing_id:
+            p = db.query(Product).filter(Product.product_id == payment.listing_id).first()
+            if p:
+                data["product_title"] = p.title
+        return data
+        
+    return {
+        "requests": [_enrich(r) for r in requests],
+        "history": [_enrich(h) for h in history]
+    }
+
+
+@router.post("/admin/approve/{payment_id}")
+def approve_payment(
+    payment_id: str,
+    user: User = Depends(role_required(["Admin"])),
+    db: Session = Depends(get_db)
+):
+    payment = db.query(PaymentTransaction).filter(PaymentTransaction.payment_id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.status == "SUCCESS":
+        return {"status": "SUCCESS", "message": "Already approved"}
+        
+    payment.status = "SUCCESS"
+    payment.order_status = "SUCCESS"
+    payment.completed_at = now_utc().replace(tzinfo=None)
+    payment.paid_at = now_utc().replace(tzinfo=None)
+    
+    # Trigger actual pass / plan / listing activation
+    _apply_success_activation(payment, db)
+    
+    from app.services.notifications import create_notification
+    try:
+        create_notification(
+            db,
+            payment.user_id,
+            "Payment Approved",
+            f"Your manual payment for {payment.plan_name} has been approved.",
+            "payment_approved",
+            payment.listing_id
+        )
+    except Exception as e:
+        print(f"Failed to create notification: {e}")
+        
+    db.commit()
+    db.refresh(payment)
+    return {"status": "SUCCESS"}

@@ -4,7 +4,15 @@ from decimal import Decimal
 from typing import Any
 
 
+# Launch Offer till 31st August: All listing fees & plans are ₹1.00
 SELLER_LISTING_FEES = {
+    "mobile": Decimal("1.00"),
+    "laptop": Decimal("1.00"),
+    "bike": Decimal("1.00"),
+    "car": Decimal("1.00"),
+}
+
+ORIGINAL_SELLER_FEES = {
     "mobile": Decimal("11.80"),
     "laptop": Decimal("59.00"),
     "bike": Decimal("118.00"),
@@ -18,7 +26,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "mobile",
-        "amount": Decimal("24.78"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("24.78"),
         "duration_days": 1,
     },
     {
@@ -27,7 +36,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "laptop",
-        "amount": Decimal("60.18"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("60.18"),
         "duration_days": 1,
     },
     {
@@ -36,7 +46,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "bike",
-        "amount": Decimal("119.18"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("119.18"),
         "duration_days": 1,
     },
     {
@@ -45,7 +56,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "car",
-        "amount": Decimal("591.18"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("591.18"),
         "duration_days": 1,
     },
     {
@@ -54,7 +66,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "mobile",
-        "amount": Decimal("1178.82"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("1178.82"),
         "duration_days": 30,
     },
     {
@@ -63,7 +76,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "laptop,bike",
-        "amount": Decimal("2358.82"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("2358.82"),
         "duration_days": 30,
     },
     {
@@ -72,7 +86,8 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "car",
-        "amount": Decimal("3538.82"),
+        "amount": Decimal("1.00"),
+        "original_amount": Decimal("3538.82"),
         "duration_days": 30,
     },
 ]
@@ -85,13 +100,17 @@ def money_string(amount: Decimal) -> str:
 def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
     payload = dict(plan)
     payload["amount"] = money_string(plan["amount"])
+    if "original_amount" in plan:
+        payload["original_amount"] = money_string(plan["original_amount"])
     payload["currency"] = "INR"
+    payload["launch_offer"] = "Launch Offer ₹1 till 31st August"
     return payload
 
 
 def list_public_plans() -> list[dict[str, Any]]:
     plans = [public_plan(plan) for plan in PAYMENT_PLANS]
     for product_type, amount in SELLER_LISTING_FEES.items():
+        orig = ORIGINAL_SELLER_FEES.get(product_type, amount)
         plans.append(
             {
                 "plan_id": f"seller_{product_type}_listing",
@@ -100,8 +119,10 @@ def list_public_plans() -> list[dict[str, Any]]:
                 "role": "Seller",
                 "product_type": product_type,
                 "amount": money_string(amount),
+                "original_amount": money_string(orig),
                 "currency": "INR",
                 "duration_days": 0,
+                "launch_offer": "Launch Offer ₹1 till 31st August",
             }
         )
     return plans

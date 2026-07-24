@@ -407,7 +407,7 @@ def serialize_payment(payment) -> dict:
         "notes": value(payment, "notes", {}) or {},
         "initiated_at": iso(value(payment, "initiated_at")),
         "completed_at": iso(value(payment, "completed_at")),
-        "created_at": iso(value(payment, "created_at")),
+        "created_at": iso(value(payment, "initiated_at") or value(payment, "created_at")),
         "paid_at": iso(value(payment, "paid_at")),
         "updated_at": iso(value(payment, "updated_at")),
     }

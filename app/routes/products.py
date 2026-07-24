@@ -278,6 +278,10 @@ async def create_product(
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Blocked users cannot create listings.")
     body = await _parse_product_create_request(request, db, owner_user_id=user.user_id, owner_role=user.role)
+    if body.location_latitude is None or body.location_longitude is None:
+        raise HTTPException(status_code=400, detail="Location coordinates (latitude and longitude) are mandatory.")
+    if not body.location_address or not body.location_address.strip():
+        raise HTTPException(status_code=400, detail="Location address is mandatory.")
     validate_product_payload(body)
     product = Product(
         product_id=f"prod_{uuid.uuid4().hex[:12]}",
@@ -748,12 +752,16 @@ async def place_bid(
             if not isinstance(notes, dict):
                 continue
             tx_product_type = notes.get("product_type")
-            if tx_product_type == product.product_type:
+            # Case-insensitive comparison to handle 'Car' vs 'car' mismatches
+            if (tx_product_type or "").lower() == (product.product_type or "").lower():
                 active_until_str = notes.get("active_until")
                 if active_until_str:
                     try:
-                        from datetime import datetime  # noqa: PLC0415
+                        from datetime import datetime, timezone  # noqa: PLC0415
                         active_until = datetime.fromisoformat(active_until_str)
+                        # Normalize to naive UTC for comparison (now is already naive UTC)
+                        if active_until.tzinfo is not None:
+                            active_until = active_until.astimezone(timezone.utc).replace(tzinfo=None)
                         if active_until > now:
                             active_pass = True
                             break

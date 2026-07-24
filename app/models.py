@@ -182,6 +182,13 @@ class CCAvenuePaymentCreateIn(BaseModel):
     plan_id: Optional[str] = None
 
 
+class ManualPaymentCreateIn(BaseModel):
+    payment_type: str
+    listing_id: Optional[str] = None
+    subscription_plan_id: Optional[str] = None
+    plan_id: Optional[str] = None
+
+
 class CCAvenuePaymentCreateOut(BaseModel):
     order_id: str
     gateway_url: str
