@@ -730,8 +730,41 @@ async def place_bid(
     if user.is_blocked:
         raise HTTPException(status_code=403, detail="Blocked users cannot place bids.")
     if user.role == "Buyer":
-        # Buyer bidding is currently open without any payment or pass validation.
-        pass
+        now = now_utc().replace(tzinfo=None)
+        active_pass = False
+        from app.models_sql import PaymentTransaction  # noqa: PLC0415
+        
+        transactions = (
+            db.query(PaymentTransaction)
+            .filter(
+                PaymentTransaction.user_id == user.user_id,
+                PaymentTransaction.status == "SUCCESS",
+                PaymentTransaction.payment_type == "BUYER_PASS",
+            )
+            .all()
+        )
+        for tx in transactions:
+            notes = tx.notes or {}
+            if not isinstance(notes, dict):
+                continue
+            tx_product_type = notes.get("product_type")
+            if tx_product_type == product.product_type:
+                active_until_str = notes.get("active_until")
+                if active_until_str:
+                    try:
+                        from datetime import datetime  # noqa: PLC0415
+                        active_until = datetime.fromisoformat(active_until_str)
+                        if active_until > now:
+                            active_pass = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+        
+        if not active_pass:
+            raise HTTPException(
+                status_code=402,
+                detail=f"You need an active bidding pass for the {product.product_type} category to place a bid."
+            )
 
     current_bid = float(product.current_bid or 0)
     expected_price = float(product.expected_price)

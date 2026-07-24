@@ -5,10 +5,10 @@ from typing import Any
 
 
 SELLER_LISTING_FEES = {
-    "mobile": Decimal("10.00"),
-    "laptop": Decimal("50.00"),
-    "bike": Decimal("100.00"),
-    "car": Decimal("500.00"),
+    "mobile": Decimal("11.80"),
+    "laptop": Decimal("59.00"),
+    "bike": Decimal("118.00"),
+    "car": Decimal("590.00"),
 }
 
 PAYMENT_PLANS: list[dict[str, Any]] = [
@@ -18,7 +18,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "mobile",
-        "amount": Decimal("21.00"),
+        "amount": Decimal("24.78"),
         "duration_days": 1,
     },
     {
@@ -27,7 +27,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "laptop",
-        "amount": Decimal("41.00"),
+        "amount": Decimal("60.18"),
         "duration_days": 1,
     },
     {
@@ -36,7 +36,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "bike",
-        "amount": Decimal("101.00"),
+        "amount": Decimal("119.18"),
         "duration_days": 1,
     },
     {
@@ -45,7 +45,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "BUYER_PASS",
         "role": "Buyer",
         "product_type": "car",
-        "amount": Decimal("211.00"),
+        "amount": Decimal("591.18"),
         "duration_days": 1,
     },
     {
@@ -54,7 +54,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "mobile",
-        "amount": Decimal("999.00"),
+        "amount": Decimal("1178.82"),
         "duration_days": 30,
     },
     {
@@ -63,7 +63,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "laptop,bike",
-        "amount": Decimal("1999.00"),
+        "amount": Decimal("2358.82"),
         "duration_days": 30,
     },
     {
@@ -72,7 +72,7 @@ PAYMENT_PLANS: list[dict[str, Any]] = [
         "payment_type": "DEALER_PLAN",
         "role": "Dealer",
         "product_type": "car",
-        "amount": Decimal("2999.00"),
+        "amount": Decimal("3538.82"),
         "duration_days": 30,
     },
 ]
